@@ -934,6 +934,11 @@ def run_agy_design(agent: dict, task: dict) -> dict:
         "以下の要望と対象コードをもとに、デザイン改善提案・レビュー・UI不具合の診断をMarkdownで返してください。",
         "実際のファイル編集やコミットはせず、提案・指摘・直し方の説明だけを返してください。",
         "配色は落ち着いたトーンを尊重してください。",
+        "回答は必ず次の形式で始めてください:\n"
+        "<summary>\n"
+        "（ファイル名・URLを含まない2〜3文の日本語要約）\n"
+        "</summary>\n"
+        "その後に詳細をMarkdownで続けてください。",
         f"要望:\n{request}",
     ]
     if target_text:
@@ -971,7 +976,8 @@ def run_agy_design(agent: dict, task: dict) -> dict:
         header = "\n".join(header_lines) + "\n\n"
         art = save_artifact(header + proposal, f"agy-design-{label}")
 
-        summary = _summarize_design_proposal(proposal)
+        m = re.search(r"<summary>\s*(.*?)\s*</summary>", proposal, re.DOTALL)
+        summary = m.group(1).strip() if m else _summarize_design_proposal(proposal)
         result = {"message": f"🎨 デザイン提案: {label}\n\n{summary}"}
         if target_err:
             result["message"] += f"\n\n⚠️ 指定パスを読めなかったため、全般的な提案にしました。({target_err})"
