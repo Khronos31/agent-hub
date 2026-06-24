@@ -763,6 +763,13 @@ body {
     box-shadow: 0 0 0 2px rgba(0, 154, 199, 0.1);
 }
 
+.form-hint {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    margin-top: 4px;
+    display: block;
+}
+
 .modal-actions {
     display: flex;
     justify-content: flex-end;

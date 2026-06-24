@@ -201,11 +201,12 @@
                             <input type="number" id="modal-agent-end" min="0" max="23" value="22" class="time-input">
                             <span class="time-unit">時</span>
                         </div>
-                        <span style="font-size: 11px; color: var(--color-text-muted); margin-top: 4px; display: block;">※ この時間帯以外はほぼ呼び出されません</span>
+                        <span class="form-hint">※ この時間帯以外はほぼ呼び出されません</span>
                     </div>
                     <div class="form-group">
                         <label for="modal-agent-prompt">システムプロンプト（任意）</label>
-                        <textarea id="modal-agent-prompt" rows="3" placeholder="エージェントの挙動を設定するプロンプトを入力してください..."></textarea>
+                        <textarea id="modal-agent-prompt" rows="3" placeholder="例: コードレビュー担当。指摘は簡潔に2〜3文で。自分宛て(@名前)でない雑談には無理に割り込まない。"></textarea>
+                        <span class="form-hint">役割・口調・発言の積極性などを自由に書けます。空欄なら素の性格で参加します。</span>
                     </div>
                 </div>
 
