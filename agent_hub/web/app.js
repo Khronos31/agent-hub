@@ -23,7 +23,7 @@ const state = {
 
 // Map of predefined display names for unique bundled types
 const typeNames = {
-    claude: "Claude Code",
+    claude: "Claude",
     codex: "Codex",
     agy: "Antigravity",
     external: "外部APIキー"
