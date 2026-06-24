@@ -366,9 +366,13 @@ def build_prompt(agent: dict, data: dict, new_messages: list[dict]) -> str:
         body = "前回以降のメッセージ:\n\n" + "\n".join(lines)
     else:
         body = "（前回以降、新着メッセージはありません）"
+    # 注意: ここで {"message": "..."} のようなJSONオブジェクトのリテラルを見せない。
+    # claude/codex は --json-schema で {message} 構造を既に強制しているため、
+    # ここでJSONを再提示すると message の値に JSON文字列を丸ごと入れる「二重包み」を誘発する。
+    # スキーマのフィールド名だけを自然文で参照する（agyはスキーマ非対応なので call_agy 側で形式を補う）。
     tail = (
-        "\n\n何か言いたいことがあれば {\"message\": \"...\"} を返してください。\n"
-        "なければ {\"message\": null} を返してください。"
+        "\n\nいま会話に加わりたいことがあれば、その発言内容を message に入れて返してください。\n"
+        "特に発言することがなければ message を null にしてください。"
     )
     return header + body + tail
 
@@ -383,7 +387,34 @@ def run_capture(cmd: list[str], env: dict, timeout: int) -> tuple[int, str, str]
         return 1, "", str(exc)
 
 
+def _normalize_message(val):
+    """message の値がさらに {"message": ...} のJSON文字列なら剥がす（モデルの二重包み対策）。"""
+    seen = 0
+    while isinstance(val, str) and seen < 3:
+        s = val.strip()
+        if not (s.startswith("{") and '"message"' in s):
+            break
+        try:
+            obj = json.loads(s)
+        except Exception:
+            break
+        if isinstance(obj, dict) and "message" in obj:
+            val = obj["message"]
+            seen += 1
+        else:
+            break
+    return val
+
+
 def extract_message(raw) -> dict | None:
+    """様々な出力から {"message": ...} を抽出し、二重包みを正規化する。"""
+    res = _extract_message_raw(raw)
+    if res is not None and "message" in res:
+        res["message"] = _normalize_message(res["message"])
+    return res
+
+
+def _extract_message_raw(raw) -> dict | None:
     """様々な出力から {"message": ...} を抽出する。"""
     if raw is None:
         return None
