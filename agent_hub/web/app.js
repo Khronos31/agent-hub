@@ -515,14 +515,13 @@ function renderMessages() {
                     
                     const img = document.createElement('img');
                     img.className = 'attachment-image-thumb';
-                    img.src = `api/artifacts/${att.id}`;
+                    img.src = `./api/artifacts/${att.id}`;
                     img.alt = att.name;
-                    
+
                     img.onerror = () => {
-                        img.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="240" height="150" viewBox="0 0 240 150"><rect width="100%" height="100%" fill="%23f3f4f6"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="12" fill="%239ca3af">画像を読み込めませんでした</text></svg>';
-                        img.classList.add('error');
+                        container.innerHTML = '<div class="attachment-image-error">画像を読み込めませんでした</div>';
                     };
-                    
+
                     img.addEventListener('click', () => {
                         openArtifactModal(att.id, att.type, att.name);
                     });
@@ -1017,16 +1016,27 @@ async function openArtifactModal(artifactId, type = 'markdown', name = '') {
 
     if (type === 'image') {
         DOM.artifactModal.classList.add('image-mode');
-        DOM.artifactModalBody.innerHTML = `
-            <div class="artifact-image-container">
-                <img class="artifact-image-large" src="api/artifacts/${artifactId}" alt="${escapeHTML(name)}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22 viewBox=%220 0 100 100%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23eee%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-family=%22sans-serif%22 font-size=%2212%22 fill=%22%23999%22>読み込み失敗</text></svg>'">
-            </div>
-        `;
+        DOM.artifactModalBody.innerHTML = '';
+        const container = document.createElement('div');
+        container.className = 'artifact-image-container';
+        const img = document.createElement('img');
+        img.className = 'artifact-image-large';
+        img.src = `./api/artifacts/${artifactId}`;
+        img.alt = name;
+        img.onerror = () => {
+            container.innerHTML = '<div class="artifact-error">画像を読み込めませんでした。</div>';
+        };
+        // 画像そのもの以外（余白/背景）をタップしたら閉じる。スマホで枠外タップで戻れるように。
+        container.addEventListener('click', (e) => {
+            if (e.target !== img) closeArtifactModal();
+        });
+        container.appendChild(img);
+        DOM.artifactModalBody.appendChild(container);
         return;
     }
 
     try {
-        const response = await fetch(`api/artifacts/${artifactId}`);
+        const response = await fetch(`./api/artifacts/${artifactId}`);
         if (!response.ok) {
             throw new Error(`HTTP error ${response.status}`);
         }

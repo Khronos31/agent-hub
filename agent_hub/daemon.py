@@ -761,7 +761,8 @@ def run_agy_image(agent: dict, task: dict) -> dict:
             return {"message": f"⚠️ 画像生成に失敗しました（rc={rc}）。プロンプトを変えて再度お試しください。"}
 
         art = save_image_artifact(pngs[-1], "agy-image")
-        caption = (extract_message(out) or "").strip() or "画像を生成しました。"
+        cap = extract_message(out)
+        caption = ((cap.get("message") if isinstance(cap, dict) else None) or "").strip() or "画像を生成しました。"
         result = {"message": f"🎨 画像を生成しました\n\n{caption}"}
         if art:
             result["attachments"] = [art]
