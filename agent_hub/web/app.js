@@ -96,7 +96,13 @@ const DOM = {
     btnDeleteConfirm: document.getElementById('btn-delete-confirm'),
 
     // Toast
-    toast: document.getElementById('toast')
+    toast: document.getElementById('toast'),
+
+    // Artifact Modal elements
+    artifactModal: document.getElementById('artifact-modal'),
+    artifactModalTitle: document.getElementById('artifact-modal-title'),
+    artifactModalBody: document.getElementById('artifact-modal-body'),
+    btnArtifactClose: document.getElementById('btn-artifact-close')
 };
 
 // ==========================================================================
@@ -257,6 +263,23 @@ function setupEventListeners() {
 
     // Window resize observer
     window.addEventListener('resize', scrollToBottom);
+
+    // Artifact Modal close triggers
+    DOM.btnArtifactClose.addEventListener('click', closeArtifactModal);
+    DOM.artifactModal.addEventListener('click', (e) => {
+        if (e.target === DOM.artifactModal) {
+            closeArtifactModal();
+        }
+    });
+
+    // Global ESC key to close modal
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            if (DOM.artifactModal.classList.contains('show')) {
+                closeArtifactModal();
+            }
+        }
+    });
 }
 
 // ==========================================================================
@@ -480,6 +503,22 @@ function renderMessages() {
         // Updated to set HTML with mention styling support (Version 5)
         bubble.innerHTML = formatMessageContent(msg.content);
         bubbleCol.appendChild(bubble);
+
+        // Render attachments if available
+        if (msg.attachments && msg.attachments.length > 0) {
+            const attachmentsDiv = document.createElement('div');
+            attachmentsDiv.className = 'message-attachments';
+            msg.attachments.forEach(att => {
+                const chip = document.createElement('button');
+                chip.className = 'attachment-chip';
+                chip.innerHTML = `📄 <span class="attachment-name">${escapeHTML(att.name)}</span>`;
+                chip.addEventListener('click', () => {
+                    openArtifactModal(att.id);
+                });
+                attachmentsDiv.appendChild(chip);
+            });
+            bubbleCol.appendChild(attachmentsDiv);
+        }
 
         const time = document.createElement('span');
         time.className = 'message-time';
@@ -931,4 +970,114 @@ function openDeleteModal(index) {
 function closeDeleteModal() {
     DOM.deleteModal.classList.remove('show');
     activeDeleteIndex = null;
+}
+
+// ==========================================================================
+// Artifact Preview Modal Controller & Markdown Renderer
+// ==========================================================================
+
+async function openArtifactModal(artifactId) {
+    DOM.artifactModalBody.innerHTML = '<div class="artifact-loading">読み込み中...</div>';
+    DOM.artifactModal.classList.add('show');
+
+    try {
+        const response = await fetch(`api/artifacts/${artifactId}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error ${response.status}`);
+        }
+        const data = await response.json();
+        DOM.artifactModalBody.innerHTML = renderMarkdown(data.content || "");
+    } catch (error) {
+        console.error("Failed to load artifact:", error);
+        DOM.artifactModalBody.innerHTML = '<div class="artifact-error">成果物の読み込みに失敗しました。</div>';
+    }
+}
+
+function closeArtifactModal() {
+    DOM.artifactModal.classList.remove('show');
+    DOM.artifactModalBody.innerHTML = '';
+}
+
+function renderMarkdown(content) {
+    let html = escapeHTML(content);
+
+    // 1. Escape/Protect code blocks
+    const placeholders = [];
+    let placeholderCounter = 0;
+
+    // Multi-line code blocks
+    html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)\n```/g, (match, lang, code) => {
+        const placeholder = `__CODEBLOCK_PLACEHOLDER_${placeholderCounter++}__`;
+        placeholders.push({
+            placeholder,
+            html: `<pre class="artifact-code-block"><code class="language-${lang}">${code}</code></pre>`
+        });
+        return placeholder;
+    });
+
+    // Fallback for code blocks without newlines or simple backticks block
+    html = html.replace(/```([a-zA-Z0-9_-]*)([\s\S]*?)```/g, (match, lang, code) => {
+        const placeholder = `__CODEBLOCK_PLACEHOLDER_${placeholderCounter++}__`;
+        placeholders.push({
+            placeholder,
+            html: `<pre class="artifact-code-block"><code class="language-${lang}">${code}</code></pre>`
+        });
+        return placeholder;
+    });
+
+    // 2. Escape/Protect inline code
+    html = html.replace(/`([^`\n]+)`/g, (match, code) => {
+        const placeholder = `__CODEBLOCK_PLACEHOLDER_${placeholderCounter++}__`;
+        placeholders.push({
+            placeholder,
+            html: `<code class="artifact-inline-code">${code}</code>`
+        });
+        return placeholder;
+    });
+
+    // 3. Headings
+    html = html.replace(/^###### (.*?)$/gm, '<h6>$1</h6>');
+    html = html.replace(/^##### (.*?)$/gm, '<h5>$1</h5>');
+    html = html.replace(/^#### (.*?)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^### (.*?)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.*?)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.*?)$/gm, '<h1>$1</h1>');
+
+    // 4. Lists
+    // Unordered
+    html = html.replace(/^(?:-|\*)\s+(.*?)$/gm, '<li-u>$1</li-u>');
+    // Ordered
+    html = html.replace(/^\d+\.\s+(.*?)$/gm, '<li-o>$1</li-o>');
+
+    // Wrap continuous <ul> items
+    html = html.replace(/((?:<li-u>.*?<\/li-u>[\s\r\n]*)+)/g, (match) => {
+        return '<ul>' + match.replace(/<li-u>/g, '<li>').replace(/<\/li-u>/g, '</li>') + '</ul>';
+    });
+
+    // Wrap continuous <ol> items
+    html = html.replace(/((?:<li-o>.*?<\/li-o>[\s\r\n]*)+)/g, (match) => {
+        return '<ol>' + match.replace(/<li-o>/g, '<li>').replace(/<\/li-o>/g, '</li>') + '</ol>';
+    });
+
+    // 5. Bold text
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+    // 6. Links
+    html = html.replace(/\[(.*?)\]\((.*?)\)/g, (match, text, url) => {
+        const cleanUrl = url.trim().toLowerCase().startsWith('javascript:') ? '#' : url;
+        return `<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    });
+
+    // 7. Clean up extra newlines near block elements
+    html = html.replace(/\n*(<\/?(h[1-6]|ul|ol|li|pre)[^>]*>)\n*/g, '$1');
+
+    // 8. Convert remaining newlines to breaks
+    html = html.replace(/\n/g, '<br>');
+
+    // 9. Restore placeholders
+    placeholders.forEach(p => {
+        html = html.replace(p.placeholder, p.html);
+    });
+
+    return html;
 }
