@@ -65,11 +65,14 @@ AUTH_SEED = {
 # タイプ別デフォルトモデル（無闇に高価なモデルを使わない）
 DEFAULT_MODEL = {
     "claude": "haiku",
-    # codex は ChatGPTアカウント認証だと任意モデル(gpt-4o-mini等)を弾くため、
-    # モデル未指定にして codex 自身のデフォルト(対応モデル)に委ねる。
-    "codex": "",
+    # codex は ChatGPTアカウント認証だと gpt-4o-mini 等を弾く。
+    # gpt-5.4-mini は対応モデルとして実機確認済み（軽量・高速）。
+    "codex": "gpt-5.4-mini",
     "agy": "gemini-2.0-flash",
 }
+
+# codex の推論量。グループチャットの即応性重視で medium。
+CODEX_REASONING_EFFORT = "medium"
 
 # additionalProperties:false は OpenAI(codex)の strict structured output で必須。
 # claude --json-schema もこの指定を受け付ける。
@@ -482,7 +485,9 @@ def call_codex(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> 
     except Exception:
         pass
     full_prompt = (f"あなたへの指示: {sys_prompt}\n\n" if sys_prompt else "") + prompt
-    common = ["--skip-git-repo-check", "--output-schema", str(SCHEMA_FILE), "-o", out_file]
+    common = ["--skip-git-repo-check",
+              "-c", f"model_reasoning_effort={CODEX_REASONING_EFFORT}",
+              "--output-schema", str(SCHEMA_FILE), "-o", out_file]
     model = model_for(agent)
     if model:
         common += ["-m", model]
