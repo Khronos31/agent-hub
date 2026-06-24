@@ -974,11 +974,11 @@ def run_agy_design(agent: dict, task: dict) -> dict:
         if target_err:
             header_lines.append(f"- 注記: 指定パスを読めなかったため全般的な提案にしました: {target_err}")
         header = "\n".join(header_lines) + "\n\n"
-        art = save_artifact(header + body, f"agy-design-{label}")
-
         m = re.search(r"<summary>\s*(.*?)\s*</summary>", proposal, re.DOTALL)
         summary = m.group(1).strip() if m else _summarize_design_proposal(proposal)
         body = re.sub(r"<summary>.*?</summary>\s*", "", proposal, flags=re.DOTALL).strip()
+        art = save_artifact(header + body, f"agy-design-{label}")
+
         result = {"message": f"🎨 デザイン提案: {label}\n\n{summary}"}
         if target_err:
             result["message"] += f"\n\n⚠️ 指定パスを読めなかったため、全般的な提案にしました。({target_err})"
