@@ -1,0 +1,769 @@
+/* ==========================================================================
+   Design System & Variable Definitions
+   ========================================================================== */
+:root {
+    /* Color Palette */
+    --color-primary: #009AC7;
+    --color-primary-hover: #0082A9;
+    --color-primary-light: rgba(0, 154, 199, 0.08);
+    --color-bg-app: #F5F5F5;
+    --color-bg-card: #FFFFFF;
+    --color-bg-bubble-user: #009AC7;
+    --color-bg-bubble-other: #E5E5EA;
+    --color-text-bubble-user: #FFFFFF;
+    --color-text-bubble-other: #000000;
+    
+    /* Home Assistant Theme Header */
+    --color-header-bg: #1C1C1C;
+    --color-header-text: #FFFFFF;
+    
+    /* UI Text Colors */
+    --color-text-main: #333333;
+    --color-text-muted: #757575;
+    --color-text-light: #9E9E9E;
+    
+    /* Border & Outline Colors */
+    --color-border: rgba(0, 0, 0, 0.08);
+    --color-input-border: #E0E0E0;
+    --color-input-focus: #009AC7;
+    
+    /* Typography */
+    --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    
+    /* Animation */
+    --transition-standard: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+/* ==========================================================================
+   Global Reset & Setup
+   ========================================================================== */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+
+body {
+    font-family: var(--font-family);
+    background: linear-gradient(135deg, #eef2f3 0%, #8e9eab 100%);
+    color: var(--color-text-main);
+    height: 100vh;
+    height: -webkit-fill-available;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+
+/* ==========================================================================
+   Layout Containers
+   ========================================================================== */
+.app-container {
+    width: 100%;
+    max-width: 600px;
+    height: 100vh;
+    background-color: var(--color-bg-card);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Base screen structure */
+.screen-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(30px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    z-index: 1;
+}
+
+.screen-container.active {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+    z-index: 2;
+}
+
+/* ==========================================================================
+   Header Component
+   ========================================================================== */
+.app-header {
+    background-color: var(--color-header-bg);
+    color: var(--color-header-text);
+    height: 56px;
+    padding: 0 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    z-index: 10;
+    flex-shrink: 0;
+}
+
+.header-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.header-icon {
+    font-size: 22px;
+    animation: wave 2.5s infinite;
+    transform-origin: 70% 70%;
+    display: inline-block;
+}
+
+@keyframes wave {
+    0% { transform: rotate( 0.0deg) }
+    10% { transform: rotate(14.0deg) }
+    20% { transform: rotate(-8.0deg) }
+    30% { transform: rotate(14.0deg) }
+    40% { transform: rotate(-4.0deg) }
+    50% { transform: rotate(10.0deg) }
+    60% { transform: rotate( 0.0deg) }
+    100% { transform: rotate( 0.0deg) }
+}
+
+.app-header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+/* Buttons and Controls */
+.icon-button {
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition-standard);
+}
+
+.icon-button:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.icon-button:active {
+    transform: scale(0.92);
+}
+
+/* For buttons in white background settings screen */
+.settings-content .icon-button {
+    color: var(--color-text-main);
+}
+
+.settings-content .icon-button:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+/* ==========================================================================
+   Chat Screen Features
+   ========================================================================== */
+.messages-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    background-color: var(--color-bg-app);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    scroll-behavior: smooth;
+}
+
+/* Custom scrollbar styling for high-quality feel */
+.messages-container::-webkit-scrollbar,
+.settings-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.messages-container::-webkit-scrollbar-track,
+.settings-content::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.messages-container::-webkit-scrollbar-thumb,
+.settings-content::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 3px;
+}
+
+.messages-container::-webkit-scrollbar-thumb:hover,
+.settings-content::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+/* Message Bubble Structures */
+.message-group {
+    display: flex;
+    max-width: 85%;
+    gap: 8px;
+    align-items: flex-end;
+    animation: fadeInUp 0.3s ease forwards;
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.message-group.agent-message {
+    align-self: flex-start;
+}
+
+.message-group.user-message {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+}
+
+/* Avatar layout */
+.avatar-col {
+    flex-shrink: 0;
+    margin-bottom: 2px;
+}
+
+.avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #FFFFFF;
+    font-weight: 700;
+    font-size: 13px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    user-select: none;
+}
+
+.bubble-col {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.sender-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin-left: 4px;
+}
+
+.user-message .sender-name {
+    margin-right: 4px;
+    align-self: flex-end;
+}
+
+.message-bubble {
+    padding: 10px 14px;
+    font-size: 14px;
+    line-height: 1.45;
+    word-break: break-word;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    white-space: pre-wrap;
+}
+
+.agent-message .message-bubble {
+    background-color: var(--color-bg-bubble-other);
+    color: var(--color-text-bubble-other);
+    border-radius: 16px;
+    border-top-left-radius: 4px;
+}
+
+.user-message .message-bubble {
+    background-color: var(--color-bg-bubble-user);
+    color: var(--color-text-bubble-user);
+    border-radius: 16px;
+    border-top-right-radius: 4px;
+}
+
+.message-time {
+    font-size: 9px;
+    color: var(--color-text-light);
+    margin-top: 1px;
+    align-self: flex-end;
+}
+
+.user-message .message-time {
+    align-self: flex-start;
+}
+
+/* ==========================================================================
+   Chat Input Area
+   ========================================================================== */
+.input-container {
+    background-color: var(--color-bg-card);
+    padding: 12px 16px;
+    border-top: 1px solid var(--color-border);
+    flex-shrink: 0;
+}
+
+.input-form {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+}
+
+#chat-input {
+    flex: 1;
+    border: 1px solid var(--color-input-border);
+    border-radius: 20px;
+    padding: 10px 16px;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.4;
+    resize: none;
+    max-height: 100px;
+    outline: none;
+    background-color: #F9F9F9;
+    transition: var(--transition-standard);
+}
+
+#chat-input:focus {
+    border-color: var(--color-input-focus);
+    background-color: #FFFFFF;
+    box-shadow: 0 0 0 2px rgba(0, 154, 199, 0.1);
+}
+
+.send-button {
+    background-color: var(--color-primary);
+    color: #FFFFFF;
+    border-radius: 50%;
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition-bounce);
+    box-shadow: 0 2px 6px rgba(0, 154, 199, 0.3);
+}
+
+.send-button svg {
+    margin-left: 2px;
+    transition: transform 0.2s ease;
+}
+
+.send-button:hover {
+    background-color: var(--color-primary-hover);
+    box-shadow: 0 4px 10px rgba(0, 154, 199, 0.4);
+}
+
+.send-button:hover svg {
+    transform: translate(2px, -2px) scale(1.05);
+}
+
+.send-button:active {
+    transform: scale(0.9);
+}
+
+/* ==========================================================================
+   Settings Screen Features
+   ========================================================================== */
+.settings-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    background-color: var(--color-bg-app);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.settings-card {
+    background-color: var(--color-bg-card);
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.02);
+}
+
+.card-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--color-text-main);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+    padding-bottom: 8px;
+}
+
+.card-title-icon {
+    color: var(--color-primary);
+}
+
+/* Card Header flex container for action button */
+.card-header-flex {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+    padding-bottom: 8px;
+}
+
+.card-header-flex .card-title {
+    margin-bottom: 0;
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+/* Active schedule Picker styling */
+.setting-item.schedule-setting {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+}
+
+.setting-item.schedule-setting label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--color-text-main);
+}
+
+.time-range-picker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.time-input {
+    width: 54px;
+    height: 36px;
+    border: 1px solid var(--color-input-border);
+    border-radius: 8px;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-text-main);
+    background-color: #F9F9F9;
+    outline: none;
+    transition: var(--transition-standard);
+}
+
+.time-input:focus {
+    border-color: var(--color-input-focus);
+    background-color: #FFFFFF;
+    box-shadow: 0 0 0 2px rgba(0, 154, 199, 0.10);
+}
+
+.range-separator {
+    color: var(--color-text-muted);
+    font-weight: 600;
+}
+
+.time-unit {
+    font-size: 14px;
+    color: var(--color-text-main);
+    font-weight: 500;
+}
+
+/* General Buttons styling */
+.text-button {
+    background: transparent;
+    border: none;
+    color: var(--color-primary);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 10px;
+    border-radius: 6px;
+    transition: var(--transition-standard);
+}
+
+.text-button:hover {
+    background-color: var(--color-primary-light);
+}
+
+.primary-button {
+    background-color: var(--color-primary);
+    color: #FFFFFF;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: var(--transition-bounce);
+    box-shadow: 0 2px 6px rgba(0, 154, 199, 0.2);
+}
+
+.primary-button:hover {
+    background-color: var(--color-primary-hover);
+    box-shadow: 0 4px 10px rgba(0, 154, 199, 0.3);
+}
+
+.primary-button:active {
+    transform: scale(0.95);
+}
+
+.flex-align-center {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Agents List layout */
+.agents-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.agent-item-card {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    background-color: #F9F9F9;
+    border: 1px solid rgba(0, 0, 0, 0.04);
+    border-radius: 10px;
+    gap: 12px;
+    transition: var(--transition-standard);
+}
+
+.agent-item-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+}
+
+.agent-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #FFFFFF;
+    font-weight: 700;
+    font-size: 14px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+}
+
+.agent-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.agent-name-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.agent-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-text-main);
+}
+
+.agent-description {
+    font-size: 11px;
+    color: var(--color-text-muted);
+}
+
+/* Badges */
+.badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+.badge-bundled {
+    background-color: rgba(16, 163, 127, 0.1);
+    color: #10A37F;
+}
+
+.badge-external {
+    background-color: rgba(156, 39, 176, 0.1);
+    color: #9C27B0;
+}
+
+/* API Key Section */
+.api-key-container {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.api-key-input-wrapper {
+    flex: 1;
+    position: relative;
+}
+
+.api-key-field {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid var(--color-input-border);
+    border-radius: 8px;
+    background-color: #F9F9F9;
+    color: var(--color-text-muted);
+    font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace;
+    font-size: 12px;
+    outline: none;
+    transition: var(--transition-standard);
+}
+
+.api-key-field:focus {
+    border-color: var(--color-input-focus);
+    background-color: #FFFFFF;
+}
+
+/* ==========================================================================
+   Toast Notification component
+   ========================================================================== */
+.toast-notification {
+    position: absolute;
+    bottom: 80px;
+    left: 50%;
+    transform: translate(-50%, 20px);
+    background-color: rgba(33, 33, 33, 0.95);
+    color: #FFFFFF;
+    padding: 10px 20px;
+    border-radius: 24px;
+    font-size: 13px;
+    font-weight: 500;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s cubic-bezier(0.19, 1, 0.22, 1), transform 0.3s cubic-bezier(0.19, 1, 0.22, 1);
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.toast-notification.show {
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
+/* ==========================================================================
+   Modal Overlay & Card
+   ========================================================================== */
+.modal-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    opacity: 0;
+    pointer-events: none;
+    backdrop-filter: blur(2px);
+    transition: opacity 0.25s ease;
+}
+
+.modal-overlay.show {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.modal-card {
+    background-color: var(--color-bg-card);
+    width: 85%;
+    max-width: 400px;
+    border-radius: 14px;
+    padding: 24px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    transform: scale(0.9);
+    transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.modal-overlay.show .modal-card {
+    transform: scale(1);
+}
+
+.modal-card h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--color-text-main);
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+
+.form-group label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.form-group input,
+.form-group select {
+    padding: 10px 12px;
+    border: 1px solid var(--color-input-border);
+    border-radius: 8px;
+    font-size: 14px;
+    background-color: #F9F9F9;
+    outline: none;
+    font-family: inherit;
+    transition: var(--transition-standard);
+}
+
+.form-group input:focus,
+.form-group select:focus {
+    border-color: var(--color-input-focus);
+    background-color: #FFFFFF;
+    box-shadow: 0 0 0 2px rgba(0, 154, 199, 0.1);
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+/* ==========================================================================
+   Responsive and Fullscreen Adjustments
+   ========================================================================== */
+@media (max-width: 600px) {
+    body {
+        background: var(--color-bg-app);
+    }
+    
+    .app-container {
+        max-width: 100%;
+        height: 100vh;
+        box-shadow: none;
+    }
+}
