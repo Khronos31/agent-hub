@@ -1070,9 +1070,20 @@ function renderMarkdown(content) {
     // 5. Bold text
     html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
 
-    // 6. Links
+    // 6. Links — 安全なスキームのみ allowlist で許可。
+    // javascript:/data:/file:/vbscript: 等の実行系スキームを遮断する
+    // （成果物本文は Codex 生成物なので、悪意あるリンクが混ざる前提で防御する）。
+    // url は冒頭の escapeHTML 済みなので属性インジェクションは起きないが、href の
+    // スキーム自体を絞る。スキーム無し(相対/アンカー #...)は許可、付くなら http/https/mailto のみ。
     html = html.replace(/\[(.*?)\]\((.*?)\)/g, (match, text, url) => {
-        const cleanUrl = url.trim().toLowerCase().startsWith('javascript:') ? '#' : url;
+        const raw = url.trim();
+        const lower = raw.toLowerCase();
+        const hasScheme = /^[a-z][a-z0-9+.-]*:/.test(lower);
+        const safe = !hasScheme
+            || lower.startsWith('http://')
+            || lower.startsWith('https://')
+            || lower.startsWith('mailto:');
+        const cleanUrl = safe ? raw : '#';
         return `<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer">${text}</a>`;
     });
 

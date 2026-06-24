@@ -74,6 +74,11 @@ DEFAULT_MODEL = {
     "agy": "Gemini 3.5 Flash (Medium)",
 }
 
+# 旧→新 表示名の移行表（type -> (旧名, 新名)）。起動時に agents.json を寄せる。
+LEGACY_DISPLAY_NAMES = {
+    "claude": ("Claude Code", "Claude"),
+}
+
 # codex の推論量。グループチャットの即応性重視で medium。
 CODEX_REASONING_EFFORT = "medium"
 
@@ -557,6 +562,14 @@ def detect_task(agent: dict, new_messages: list[dict]) -> dict | None:
     return None
 
 
+# 機密を匂わせる名前パターン（鍵・トークン・資格情報・証明書など）。
+_SENSITIVE_RE = re.compile(
+    r"(secret|password|passwd|token|credential|id_rsa|id_ed25519|"
+    r"\.pem$|\.key$|\.env$|\.crt$|\.p12$|\.pfx$)",
+    re.IGNORECASE,
+)
+
+
 def _resolve_task_path(p: str) -> tuple[Path | None, str | None]:
     """タスク対象パスを /config 配下に限定して解決し、機密パスを弾く。"""
     base = Path("/config")
@@ -569,22 +582,38 @@ def _resolve_task_path(p: str) -> tuple[Path | None, str | None]:
     s = str(ap)
     if not (s == "/config" or s.startswith("/config/")):
         return None, "/config 配下のパスのみ対象です"
+    # 機密の遮断は「小さな denylist」だけでは将来の秘密ファイルを取りこぼす。
+    #   1) 明示ブロック名（既知の機密ディレクトリ/ファイル）
+    #   2) ドット始まりの隠しファイル/ディレクトリ全般（.git/.ssh/.storage/.env 等を一網打尽）
+    #   3) 機密を匂わせる名前パターン（鍵・トークン・資格情報など）
+    # の3段で弾く。コードレビュー用途なので、多少広めに弾いても実害は小さい。
     blocked = {"secrets.yaml", ".ssh", ".storage", ".git"}
-    if any(seg in blocked for seg in ap.parts):
-        return None, "機密パス（secrets/.ssh/.storage/.git）は対象外です"
+    for seg in ap.parts:
+        if seg in blocked:
+            return None, "機密パス（secrets/.ssh/.storage/.git）は対象外です"
+        if len(seg) > 1 and seg.startswith("."):
+            return None, f"隠しファイル/ディレクトリは対象外です: {seg}"
+        if _SENSITIVE_RE.search(seg):
+            return None, f"機密の疑いがあるパスは対象外です: {seg}"
     if not ap.exists():
         return None, f"パスが存在しません: {raw}"
     return ap, None
 
 
-def save_artifact(content: str, base_name: str) -> dict:
-    """成果物をファイル保存し、メッセージに添付する参照 {id, name, type} を返す。"""
-    TASK_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(JST).strftime("%Y%m%dT%H%M%S")
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", base_name).strip("_") or "artifact"
-    art_id = f"{stamp}-{slug}-{secrets.token_hex(3)}.md"
-    (TASK_OUTPUTS_DIR / art_id).write_text(content, encoding="utf-8")
-    return {"id": art_id, "name": f"{slug}.md", "type": "markdown"}
+def save_artifact(content: str, base_name: str) -> dict | None:
+    """成果物をファイル保存し、添付参照 {id, name, type} を返す。失敗時は None。
+    長すぎる名前や書き込み失敗で例外を投げると呼び出し側のレビュー全体が落ちるため、
+    slug を切り詰め、OSError は握って None を返す（添付だけ諦めて本文は活かせるように）。"""
+    try:
+        TASK_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(JST).strftime("%Y%m%dT%H%M%S")
+        slug = (re.sub(r"[^A-Za-z0-9._-]+", "_", base_name).strip("_") or "artifact")[:60]
+        art_id = f"{stamp}-{slug}-{secrets.token_hex(3)}.md"
+        (TASK_OUTPUTS_DIR / art_id).write_text(content, encoding="utf-8")
+        return {"id": art_id, "name": f"{slug}.md", "type": "markdown"}
+    except OSError as exc:
+        log(f"save_artifact failed ({base_name}): {exc}")
+        return None
 
 
 def run_codex_review(agent: dict, task: dict) -> dict:
@@ -653,10 +682,13 @@ def run_codex_review(agent: dict, task: dict) -> dict:
     review = str(struct["review_markdown"]).strip()
     header = f"# コードレビュー: {rel}\n\n_by Codex ({model or 'default'}) — read-only_\n\n"
     art = save_artifact(header + review, f"codex-review-{ap.name}")
-    return {
-        "message": f"📋 レビュー完了: `{rel}`\n\n{summary}",
-        "attachments": [art],
-    }
+    result = {"message": f"📋 レビュー完了: `{rel}`\n\n{summary}"}
+    if art:
+        result["attachments"] = [art]
+    else:
+        # 保存失敗時は添付を諦め、本文は投稿する（再試行ループにも入れない）。
+        result["message"] += "\n\n⚠️ 全文の保存に失敗したため、添付は省略されました。"
+    return result
 
 
 def call_claude(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> dict | None:
@@ -1089,6 +1121,26 @@ async def on_startup(app: web.Application) -> None:
     SCHEMA_FILE.write_text(json.dumps(OUTPUT_SCHEMA), encoding="utf-8")
     TASK_SCHEMA_FILE.write_text(json.dumps(TASK_SCHEMA), encoding="utf-8")
     data = load_agents()
+    dirty = False
+    # アドオン設定 resident_name を「常に正」とする。初回作成時にしか焼き込まれないと、
+    # 設定を変えても agents.json の古い表示名が居座って反映されないため、起動時に同期する。
+    rn = resident_name()
+    if data["user"].get("display_name") != rn or data.get("human_display_name") != rn:
+        data["user"]["display_name"] = rn
+        data["human_display_name"] = rn
+        dirty = True
+        log(f"synced user display_name from resident_name: {rn}")
+    # 旧表示名の移行: UIデフォルト名を変えても、メンション解決(parse_mentions)は
+    # agents.json の display_name 依存。既存インストールに旧名が残ると画面と実体が
+    # 食い違い @メンション/タスクが壊れるため、起動時に旧名→新名へ寄せる。
+    for agent in data["agents"]:
+        old_new = LEGACY_DISPLAY_NAMES.get(agent.get("type"))
+        if old_new and agent.get("display_name") == old_new[0]:
+            agent["display_name"] = old_new[1]
+            dirty = True
+            log(f"migrated display_name: {old_new[0]} -> {old_new[1]}")
+    if dirty:
+        save_agents(data)
     for agent in data["agents"]:
         if agent.get("kind") == "builtin":
             ensure_session(agent)
