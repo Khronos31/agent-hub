@@ -278,6 +278,8 @@ def to_ui_agent(a: dict) -> dict:
         "id": a["id"],
         "type": a.get("type"),
         "name": a.get("display_name", ""),
+        # 実効モデル名（個別指定があればそれ、無ければタイプ別デフォルト）。UI表示用。
+        "model": a.get("model") or DEFAULT_MODEL.get(a.get("type"), ""),
         "interval": int(a.get("poll_interval_seconds", 3600) // 60),
         "start": ah.get("start", 10),
         "end": ah.get("end", 22),

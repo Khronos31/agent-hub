@@ -557,11 +557,19 @@ function renderAgents() {
         nameSpan.className = 'agent-name';
         nameSpan.textContent = displayName;
 
+        nameRow.appendChild(nameSpan);
+
+        if (agent.type !== 'external' && agent.model) {
+            const modelSpan = document.createElement('span');
+            modelSpan.className = 'agent-model';
+            modelSpan.textContent = ` - ${agent.model}`;
+            nameRow.appendChild(modelSpan);
+        }
+
         const badge = document.createElement('span');
         badge.className = `badge ${agent.type !== 'external' ? 'badge-bundled' : 'badge-external'}`;
         badge.textContent = agent.type !== 'external' ? '同梱 ✓' : '外部 ✓';
 
-        nameRow.appendChild(nameSpan);
         nameRow.appendChild(badge);
 
         const desc = document.createElement('span');
