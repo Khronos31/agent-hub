@@ -82,6 +82,7 @@ CALL_TIMEOUT = 120
 _chat_lock = threading.Lock()
 _agents_lock = threading.RLock()
 running_agents: set[str] = set()
+pending_session_delete: set[str] = set()  # 実行中に削除要求が来たエージェントの遅延削除キュー
 
 
 def log(msg: str) -> None:
@@ -89,7 +90,9 @@ def log(msg: str) -> None:
 
 
 def now_iso() -> str:
-    return datetime.now(JST).isoformat(timespec="seconds")
+    # マイクロ秒精度。同一秒に複数メッセージが来ても get_messages_since の
+    # `>` 比較で取りこぼさないようにする。
+    return datetime.now(JST).isoformat(timespec="microseconds")
 
 
 def gen_key() -> str:
@@ -115,7 +118,16 @@ def load_agents() -> dict:
             try:
                 return json.loads(AGENTS_FILE.read_text(encoding="utf-8"))
             except Exception as exc:
-                log(f"agents.json parse error: {exc}")
+                # 破損していても上書き＝初期化すると、外部エージェント(あかね)や
+                # ユーザーの api_key が永久に失われる。必ず退避してから再生成する。
+                backup = AGENTS_FILE.with_name(
+                    AGENTS_FILE.name + ".corrupt-" + now_iso().replace(":", "")
+                )
+                try:
+                    shutil.copy2(AGENTS_FILE, backup)
+                    log(f"agents.json parse error: {exc} -> backed up to {backup.name}")
+                except Exception as bexc:
+                    log(f"agents.json parse error: {exc} (backup failed: {bexc})")
         data = {
             "user": {"id": "user", "display_name": resident_name(), "api_key": gen_key()},
             "agents": [],
@@ -311,6 +323,12 @@ def ensure_session(agent: dict) -> Path:
 
 
 def delete_session(agent_id: str) -> None:
+    # CLI実行中に rmtree すると in-flight な呼び出しを壊す。実行中なら遅延削除キューへ。
+    if agent_id in running_agents:
+        pending_session_delete.add(agent_id)
+        log(f"session delete deferred (running): {agent_id}")
+        return
+    pending_session_delete.discard(agent_id)
     session_dir = SESSIONS_DIR / agent_id
     try:
         if session_dir.exists():
@@ -479,6 +497,9 @@ CALLERS = {"claude": call_claude, "codex": call_codex, "agy": call_agy}
 
 
 def call_agent(agent: dict) -> None:
+    # poll開始時刻を先に確定。成功時のみここまで last_polled_at を進める。
+    # こうしないと、CLI失敗中に来たメッセージが恒久的に未読として飛ばされる。
+    poll_start = now_iso()
     data = load_agents()
     new_messages = get_messages_since(agent.get("last_polled_at", ""), exclude=agent["id"])
     prompt = build_prompt(agent, data, new_messages)
@@ -495,7 +516,10 @@ def call_agent(agent: dict) -> None:
     else:
         log(f"unknown agent type: {agent.get('type')}")
 
-    _update_agent_fields(agent["id"], {"last_polled_at": now_iso()})
+    if result is None:
+        # 失敗（例外／不明タイプ／パース不能）。last_polled_at を進めず次回再試行。
+        return
+    _update_agent_fields(agent["id"], {"last_polled_at": poll_start})
 
     if result and result.get("message"):
         text = str(result["message"]).strip()
@@ -519,6 +543,9 @@ def call_agent_wrapper(agent: dict) -> None:
         call_agent(agent)
     finally:
         running_agents.discard(agent["id"])
+        # 実行中に削除要求が来ていたら、ここで安全に後始末する。
+        if agent["id"] in pending_session_delete:
+            delete_session(agent["id"])
 
 
 def spawn_agent(agent: dict) -> None:
@@ -572,6 +599,22 @@ async def scheduler_loop() -> None:
 
 # --- HTTP API ----------------------------------------------------------------
 
+async def _json_body(request: web.Request) -> dict | None:
+    """リクエストボディをdictとして取得。不正なら None（呼び出し側で400）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _safe_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 async def get_config(request: web.Request) -> web.Response:
     data = load_agents()
     return web.json_response({
@@ -581,7 +624,9 @@ async def get_config(request: web.Request) -> web.Response:
 
 
 async def post_config(request: web.Request) -> web.Response:
-    body = await request.json()
+    body = await _json_body(request)
+    if body is None:
+        return web.json_response({"error": "invalid json"}, status=400)
     with _agents_lock:
         data = load_agents()
         existing = {a["id"]: a for a in data["agents"]}
@@ -622,7 +667,9 @@ async def get_messages(request: web.Request) -> web.Response:
 async def post_message(request: web.Request) -> web.Response:
     data = load_agents()
     api_key = bearer_key(request)
-    body = await request.json()
+    body = await _json_body(request)
+    if body is None:
+        return web.json_response({"error": "invalid json"}, status=400)
 
     if api_key:
         sender = resolve_sender(api_key, data)
@@ -658,7 +705,9 @@ async def get_agents(request: web.Request) -> web.Response:
 
 
 async def add_agent(request: web.Request) -> web.Response:
-    body = await request.json()
+    body = await _json_body(request)
+    if body is None:
+        return web.json_response({"error": "invalid json"}, status=400)
     with _agents_lock:
         data = load_agents()
         existing_ids = {a["id"] for a in data["agents"]}
@@ -688,7 +737,7 @@ async def add_agent(request: web.Request) -> web.Response:
             "type": agent_type,
             "model": body.get("model", ""),
             "enabled": True,
-            "poll_interval_seconds": int(body.get("poll_interval_seconds", 3600)),
+            "poll_interval_seconds": _safe_int(body.get("poll_interval_seconds", 3600), 3600),
             "active_hours": body.get("active_hours", {"start": 10, "end": 22}),
             "system_prompt": body.get("system_prompt", ""),
             "last_polled_at": "",
@@ -703,7 +752,9 @@ async def add_agent(request: web.Request) -> web.Response:
 
 async def patch_agent(request: web.Request) -> web.Response:
     agent_id = request.match_info["id"]
-    body = await request.json()
+    body = await _json_body(request)
+    if body is None:
+        return web.json_response({"error": "invalid json"}, status=400)
     allowed = {"enabled", "poll_interval_seconds", "active_hours", "system_prompt", "display_name", "model"}
     with _agents_lock:
         data = load_agents()
@@ -712,6 +763,8 @@ async def patch_agent(request: web.Request) -> web.Response:
             return web.json_response({"error": "not found"}, status=404)
         for key, value in body.items():
             if key in allowed:
+                if key == "poll_interval_seconds":
+                    value = _safe_int(value, agent.get("poll_interval_seconds", 3600))
                 agent[key] = value
         save_agents(data)
     return web.json_response({"success": True})
