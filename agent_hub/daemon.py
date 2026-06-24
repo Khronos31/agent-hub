@@ -65,8 +65,11 @@ AUTH_SEED = {
 # タイプ別デフォルトモデル（無闇に高価なモデルを使わない）
 DEFAULT_MODEL = {
     "claude": "haiku",
-    "codex": "gpt-4o-mini",
-    "agy": "gemini-2.0-flash",
+    # codex は ChatGPTアカウント認証だと gpt-4o-mini 等を弾く。
+    # gpt-5.4-mini は対応モデルとして実機確認済み（軽量・高速）。
+    "codex": "gpt-5.4-mini",
+    # agy はスキーマ非対応。モデル名は agy CLI の表示名そのまま指定する。
+    "agy": "Gemini 3.5 Flash (Medium)",
 }
 
 # codex の推論量。グループチャットの即応性重視で medium。
@@ -409,7 +412,12 @@ def build_agy_prompt(agent: dict, data: dict, new_messages: list[dict]) -> str:
 
 def run_capture(cmd: list[str], env: dict, timeout: int, cwd: str | None = None) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        # stdin=DEVNULL: アドオンの daemon は Supervisor から TTY stdin を継承することがあり、
+        # それを子CLIに渡すと（特に agy が）入力待ちでハングする。明示的に切っておく。
+        result = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=timeout,
+            cwd=cwd, stdin=subprocess.DEVNULL,
+        )
         return result.returncode, result.stdout or "", result.stderr or ""
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"
@@ -542,12 +550,15 @@ def call_agy(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> di
     # build_agy_prompt が正式なJSON Schema＋「JSON:」キューで抽出タスクとして解釈させる。
     # --continue は付けない（毎回 --print 単発でクリーンに返る）。
     # ファイル探索を防ぐため、CWD は空のセッションdirにする。
+    # 重要: 引数順は「--model ... --print <プロンプト>」。--print は直後の引数を
+    # プロンプト値として取るため、--print とプロンプトの間に他オプションを挟むと
+    # プロンプトが渡らず、agy が定型の自己紹介を返す/入力待ちでハングする。
     full_prompt = (f"あなたへの指示: {sys_prompt}\n\n" if sys_prompt else "") + prompt
-    cmd = [CLI["agy"], "--print"]
+    cmd = [CLI["agy"]]
     model = model_for(agent)
     if model:
         cmd += ["--model", model]
-    cmd += [full_prompt]
+    cmd += ["--print", full_prompt]
     env = os.environ.copy()
     rc, out, err = run_capture(cmd, env, AGY_TIMEOUT, cwd=str(session_dir))
     if rc != 0:
