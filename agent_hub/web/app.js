@@ -1007,9 +1007,10 @@ function closeDeleteModal() {
 
 async function openArtifactModal(artifactId, type = 'markdown', name = '') {
     DOM.artifactModalBody.innerHTML = '<div class="artifact-loading">読み込み中...</div>';
+    DOM.artifactModal.classList.remove('image-mode');
     DOM.artifactModal.classList.add('show');
 
-    const titleEl = document.getElementById('artifact-modal-title');
+    const titleEl = DOM.artifactModalTitle;
     if (titleEl) {
         titleEl.textContent = name ? name : '成果物プレビュー';
     }
@@ -1024,7 +1025,7 @@ async function openArtifactModal(artifactId, type = 'markdown', name = '') {
         img.src = `./api/artifacts/${artifactId}`;
         img.alt = name;
         img.onerror = () => {
-            container.innerHTML = '<div class="artifact-error">画像を読み込めませんでした。</div>';
+            container.innerHTML = '<div class="artifact-error attachment-image-error">画像を読み込めませんでした。</div>';
         };
         // 画像そのもの以外（余白/背景）をタップしたら閉じる。スマホで枠外タップで戻れるように。
         container.addEventListener('click', (e) => {
