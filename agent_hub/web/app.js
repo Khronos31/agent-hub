@@ -172,6 +172,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Scroll chat to bottom
     scrollToBottom();
+
+    // Start real-time polling (Version 6)
+    startPolling();
 });
 
 // ==========================================================================
@@ -328,11 +331,14 @@ function scrollToBottom() {
  * Generate Avatar Background Color based on name hash (with overrides)
  */
 function getAvatarColor(name, type) {
-    if (type === "codex" || name === "Codex") return "#10A37F"; // OpenAI Green
-    if (type === "agy" || name === "Antigravity") return "#FF6B35"; // Orange
-    if (type === "claude" || name === "Claude Code") return "#D96B43"; // Amber/Rust
-    if (name === "あかね") return "#9C27B0"; // Purple
-    if (name === "ユーザー") return "#009AC7"; // User primary blue
+    const n = (name || "").toLowerCase();
+    const t = (type || "").toLowerCase();
+
+    if (t === "codex" || n.includes("codex")) return "#10A37F"; // OpenAI Green
+    if (t === "agy" || n.includes("antigravity")) return "#8E76D8"; // Violet
+    if (t === "claude" || n.includes("claude")) return "#CC785C"; // Coral/Rust
+    if (n.includes("あかね")) return "#9C27B0"; // Purple
+    if (n === "ユーザー" || n === "user") return "#009AC7"; // User primary blue
 
     // HSL generator from name hash
     let hash = 0;
@@ -559,6 +565,34 @@ function renderAgents() {
 }
 
 // ==========================================================================
+// Real-time Polling Logic (Version 6)
+// ==========================================================================
+let lastMessagesJSON = "";
+
+async function refreshMessages() {
+    const data = await API.get(API.endpoints.messages);
+    if (!Array.isArray(data)) return;
+
+    // Avoid layout flicker if message content hasn't changed
+    const json = JSON.stringify(data);
+    if (json === lastMessagesJSON) return;
+    lastMessagesJSON = json;
+
+    const list = DOM.messagesList;
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+
+    state.messages = data;
+    renderMessages();
+
+    if (atBottom) scrollToBottom();
+}
+
+function startPolling() {
+    refreshMessages();                 // Instant first execution
+    setInterval(refreshMessages, 2000); // 2 seconds polling loop
+}
+
+// ==========================================================================
 // Handlers & Event Callback Logics
 // ==========================================================================
 
@@ -575,39 +609,9 @@ async function handleSendMessage(e) {
     DOM.chatInput.style.height = 'auto';
     hideMentionPopup();
 
-    const userMsg = {
-        sender: "ユーザー",
-        content: content,
-        isUser: true,
-        time: getCurrentFormattedTime()
-    };
-
-    state.messages.push(userMsg);
-    renderMessages();
+    await API.post(API.endpoints.messages, { content });
+    await refreshMessages();
     scrollToBottom();
-
-    await API.post(API.endpoints.messages, userMsg);
-
-    // Dynamic response simulation
-    setTimeout(async () => {
-        const availableAgents = state.agents;
-        if (availableAgents.length > 0) {
-            const randomAgent = availableAgents[Math.floor(Math.random() * availableAgents.length)];
-            const name = getAgentDisplayName(randomAgent);
-            const agentReply = {
-                sender: name,
-                content: `${userMsg.content} について了解しました！エージェント処理を開始します。`,
-                isUser: false,
-                time: getCurrentFormattedTime()
-            };
-            
-            state.messages.push(agentReply);
-            renderMessages();
-            scrollToBottom();
-            
-            console.log(`[Mock Agent response] ${name} replied.`);
-        }
-    }, 1200);
 }
 
 /**
