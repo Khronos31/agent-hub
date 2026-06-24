@@ -65,11 +65,8 @@ AUTH_SEED = {
 # タイプ別デフォルトモデル（無闇に高価なモデルを使わない）
 DEFAULT_MODEL = {
     "claude": "haiku",
-    # codex は ChatGPTアカウント認証だと gpt-4o-mini 等を弾く。
-    # gpt-5.4-mini は対応モデルとして実機確認済み（軽量・高速）。
-    "codex": "gpt-5.4-mini",
-    # agy はスキーマ非対応。モデル名は agy CLI の表示名そのまま指定する。
-    "agy": "Gemini 3.5 Flash (Medium)",
+    "codex": "gpt-4o-mini",
+    "agy": "gemini-2.0-flash",
 }
 
 # codex の推論量。グループチャットの即応性重視で medium。
@@ -85,6 +82,9 @@ OUTPUT_SCHEMA = {
 }
 
 CALL_TIMEOUT = 120
+# agy(Antigravity)はネイティブCLIで起動が重く、slimなアドオンコンテナでは
+# 1回の --print に 120s を超えることがある（SCSターミナルでも ~60s）。専用に延長。
+AGY_TIMEOUT = 300
 
 # --- 状態 --------------------------------------------------------------------
 
@@ -549,7 +549,7 @@ def call_agy(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> di
         cmd += ["--model", model]
     cmd += [full_prompt]
     env = os.environ.copy()
-    rc, out, err = run_capture(cmd, env, CALL_TIMEOUT, cwd=str(session_dir))
+    rc, out, err = run_capture(cmd, env, AGY_TIMEOUT, cwd=str(session_dir))
     if rc != 0:
         log(f"agy {agent['id']} rc={rc}: {err[:200]}")
     return extract_message(out)
