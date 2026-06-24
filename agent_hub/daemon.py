@@ -36,6 +36,8 @@ SESSIONS_DIR = DATA_DIR / "sessions"
 CHAT_LOG = DATA_DIR / "agent_chat.jsonl"
 AGENTS_FILE = DATA_DIR / "agents.json"
 SCHEMA_FILE = DATA_DIR / "hub_schema.json"
+TASK_SCHEMA_FILE = DATA_DIR / "hub_task_schema.json"
+TASK_OUTPUTS_DIR = DATA_DIR / "task_outputs"  # タスク成果物(レビュー全文など)の保管先
 WEB_DIR = Path(__file__).parent / "web"
 
 JST = timezone(timedelta(hours=9))
@@ -88,6 +90,19 @@ CALL_TIMEOUT = 120
 # agy(Antigravity)はネイティブCLIで起動が重く、slimなアドオンコンテナでは
 # 1回の --print に 120s を超えることがある（SCSターミナルでも ~60s）。専用に延長。
 AGY_TIMEOUT = 300
+# タスク(コードレビュー等)は読解・分析で時間がかかるため、会話より長く取る。
+TASK_TIMEOUT = 300
+
+# タスク用 output schema。summary をチャットに、review_markdown を成果物ファイルに分離する。
+TASK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},          # チャットに出す1〜2文の概要
+        "review_markdown": {"type": "string"},   # 全文レビュー(Markdown)
+    },
+    "required": ["summary", "review_markdown"],
+    "additionalProperties": False,
+}
 
 # --- 状態 --------------------------------------------------------------------
 
@@ -251,6 +266,7 @@ def to_ui_msg(m: dict) -> dict:
         "content": m.get("message", ""),
         "isUser": m.get("sender_id") == "human",
         "time": hhmm,
+        "attachments": m.get("attachments", []),  # タスク成果物の参照(あれば)
     }
 
 
@@ -490,6 +506,157 @@ def _extract_message_raw(raw) -> dict | None:
     return None
 
 
+# --- タスク（コードレビュー等） -------------------------------------------------
+
+def _unwrap_struct(raw) -> dict | None:
+    """codex/claude のエンベロープ(result / structured_output)を剥がして中身の dict を返す。"""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        so = raw.get("structured_output")
+        if isinstance(so, dict):
+            return so
+        if "result" in raw:
+            return _unwrap_struct(raw["result"])
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        obj = json.loads(text)
+    except Exception:
+        return None
+    if isinstance(obj, dict):
+        so = obj.get("structured_output")
+        if isinstance(so, dict):
+            return so
+        if "result" in obj:
+            return _unwrap_struct(obj["result"])
+        return obj
+    return None
+
+
+# タスクコマンド構文（ハイブリッドの「明示」側）。例: @Codex /review path/to/file : 注文
+TASK_RE = re.compile(r"/review\s+(?P<path>\S+)\s*(?::\s*(?P<focus>.*))?", re.IGNORECASE)
+
+
+def detect_task(agent: dict, new_messages: list[dict]) -> dict | None:
+    """自分宛ての /review コマンドを新着メッセージから探す（最新を優先）。"""
+    for m in reversed(new_messages):
+        if agent["id"] not in (m.get("mentions") or []):
+            continue
+        match = TASK_RE.search(m.get("message", ""))
+        if match:
+            return {
+                "kind": "review",
+                "path": match.group("path").strip("`\"'"),
+                "focus": (match.group("focus") or "").strip(),
+            }
+    return None
+
+
+def _resolve_task_path(p: str) -> tuple[Path | None, str | None]:
+    """タスク対象パスを /config 配下に限定して解決し、機密パスを弾く。"""
+    base = Path("/config")
+    raw = p.strip().strip("`\"'")
+    ap = Path(raw) if raw.startswith("/") else (base / raw)
+    try:
+        ap = ap.resolve()
+    except Exception:
+        return None, "パスを解決できませんでした"
+    s = str(ap)
+    if not (s == "/config" or s.startswith("/config/")):
+        return None, "/config 配下のパスのみ対象です"
+    blocked = {"secrets.yaml", ".ssh", ".storage", ".git"}
+    if any(seg in blocked for seg in ap.parts):
+        return None, "機密パス（secrets/.ssh/.storage/.git）は対象外です"
+    if not ap.exists():
+        return None, f"パスが存在しません: {raw}"
+    return ap, None
+
+
+def save_artifact(content: str, base_name: str) -> dict:
+    """成果物をファイル保存し、メッセージに添付する参照 {id, name, type} を返す。"""
+    TASK_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(JST).strftime("%Y%m%dT%H%M%S")
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", base_name).strip("_") or "artifact"
+    art_id = f"{stamp}-{slug}-{secrets.token_hex(3)}.md"
+    (TASK_OUTPUTS_DIR / art_id).write_text(content, encoding="utf-8")
+    return {"id": art_id, "name": f"{slug}.md", "type": "markdown"}
+
+
+def run_codex_review(agent: dict, task: dict) -> dict:
+    """Codex に read-only でコードレビューさせ、{message, attachments} を返す。
+    失敗時もユーザー向けメッセージを必ず返す（last_polled を進めて再試行ループを防ぐ）。"""
+    ap, err = _resolve_task_path(task["path"])
+    if err:
+        return {"message": f"⚠️ レビューできませんでした（{task['path']}）: {err}"}
+
+    # cwd は対象を含む GitHub サブリポジトリ、無ければ /config。codex は read-only で cwd 配下を読める。
+    parts = ap.parts
+    if len(parts) >= 4 and parts[1] == "config" and parts[2] == "GitHub":
+        cwd = Path("/config/GitHub") / parts[3]
+    else:
+        cwd = Path("/config")
+    try:
+        rel = ap.relative_to(cwd)
+    except ValueError:
+        rel = ap
+
+    focus = f"\n特に次の観点を重視: {task['focus']}" if task.get("focus") else ""
+    prompt = (
+        f"次のファイル/ディレクトリをコードレビューしてください: {rel}{focus}\n"
+        "- 重大度(critical/high/medium/low)付きで指摘を箇条書きに\n"
+        "- 各指摘に「該当箇所(関数/行)」「問題」「修正案」を含める\n"
+        "- コードは変更しないこと（read-only サンドボックスで実行中）\n"
+        "出力スキーマに従い、summary に1〜2文の日本語概要（重大度ごとの件数など）を、"
+        "review_markdown に Markdown 形式の全文レビューを入れてください。"
+    )
+
+    out_file = f"/tmp/codex_task_{agent['id']}.json"
+    try:
+        if os.path.exists(out_file):
+            os.remove(out_file)
+    except Exception:
+        pass
+    cmd = [CLI["codex"], "exec", "--skip-git-repo-check",
+           "-s", "read-only", "-C", str(cwd),
+           "-c", f"model_reasoning_effort={CODEX_REASONING_EFFORT}",
+           "--output-schema", str(TASK_SCHEMA_FILE), "-o", out_file]
+    model = model_for(agent)
+    if model:
+        cmd += ["-m", model]
+    cmd += [prompt]
+    env = os.environ.copy()
+    # タスクは一度きりの read-only 実行で、会話の継続が要らない。共有の認証済みHOMEを使う。
+    # （セッションdirには config.toml の trust_level が無く、cwd が untrusted 扱いになって
+    #   read-only サンドボックスでもファイルを読めないため。）
+    env["CODEX_HOME"] = SHARED_HOME.get("codex", env.get("CODEX_HOME", ""))
+    rc, _, err = run_capture(cmd, env, TASK_TIMEOUT, cwd=str(cwd))
+
+    struct = None
+    if os.path.exists(out_file):
+        try:
+            struct = _unwrap_struct(Path(out_file).read_text(encoding="utf-8"))
+        finally:
+            try:
+                os.remove(out_file)
+            except Exception:
+                pass
+    if not struct or not struct.get("review_markdown"):
+        log(f"codex task {agent['id']} failed rc={rc}: {err[:200]}")
+        return {"message": f"⚠️ コードレビューに失敗しました（{task['path']}, rc={rc}）"}
+
+    summary = str(struct.get("summary") or "コードレビューが完了しました").strip()
+    review = str(struct["review_markdown"]).strip()
+    header = f"# コードレビュー: {rel}\n\n_by Codex ({model or 'default'}) — read-only_\n\n"
+    art = save_artifact(header + review, f"codex-review-{ap.name}")
+    return {
+        "message": f"📋 レビュー完了: `{rel}`\n\n{summary}",
+        "attachments": [art],
+    }
+
+
 def call_claude(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> dict | None:
     cmd = [CLI["claude"], "--print", "--continue", "--output-format", "json",
            "--json-schema", json.dumps(OUTPUT_SCHEMA)]
@@ -575,22 +742,37 @@ def call_agent(agent: dict) -> None:
     poll_start = now_iso()
     data = load_agents()
     new_messages = get_messages_since(agent.get("last_polled_at", ""), exclude=agent["id"])
-    if agent.get("type") == "agy":
-        prompt = build_agy_prompt(agent, data, new_messages)
-    else:
-        prompt = build_prompt(agent, data, new_messages)
-    session_dir = ensure_session(agent)
-    sys_prompt = (agent.get("system_prompt") or "").strip()
-    caller = CALLERS.get(agent.get("type"))
 
     result = None
-    if caller:
+    # --- タスク検出（ハイブリッドの明示側）。会話より先に評価する。
+    #     v1 は codex のコードレビューのみ対応。タスクは必ず dict を返すので
+    #     last_polled_at を進めて再試行ループを防ぐ。
+    task = None
+    if agent.get("type") == "codex":
+        task = detect_task(agent, new_messages)
+    if task:
+        log(f"{agent['id']} task: {task['kind']} {task.get('path')}")
         try:
-            result = caller(agent, session_dir, sys_prompt, prompt)
+            result = run_codex_review(agent, task)
         except Exception as exc:
-            log(f"call_agent {agent['id']} error: {exc}")
+            log(f"task {agent['id']} error: {exc}")
+            result = {"message": f"⚠️ タスク実行中にエラーが発生しました: {exc}"}
     else:
-        log(f"unknown agent type: {agent.get('type')}")
+        if agent.get("type") == "agy":
+            prompt = build_agy_prompt(agent, data, new_messages)
+        else:
+            prompt = build_prompt(agent, data, new_messages)
+        session_dir = ensure_session(agent)
+        sys_prompt = (agent.get("system_prompt") or "").strip()
+        caller = CALLERS.get(agent.get("type"))
+
+        if caller:
+            try:
+                result = caller(agent, session_dir, sys_prompt, prompt)
+            except Exception as exc:
+                log(f"call_agent {agent['id']} error: {exc}")
+        else:
+            log(f"unknown agent type: {agent.get('type')}")
 
     if result is None:
         # 失敗（例外／不明タイプ／パース不能）。last_polled_at を進めず次回再試行。
@@ -609,6 +791,9 @@ def call_agent(agent: dict) -> None:
                 "message": text,
                 "mentions": mentions,
             }
+            attachments = result.get("attachments")
+            if attachments:
+                msg["attachments"] = attachments
             append_message(msg)
             _update_agent_fields(agent["id"], {"last_posted_at": now_iso()})
             log(f"{agent['id']} posted: {text[:60]}")
@@ -872,6 +1057,23 @@ async def manual_poll(request: web.Request) -> web.Response:
     return web.json_response({"status": "started"})
 
 
+async def get_artifact(request: web.Request) -> web.Response:
+    """タスク成果物（Markdown）を返す。Web UI(no-auth)も外部(bearer)も同じ内容。"""
+    art_id = request.match_info.get("id", "")
+    # パストラバーサル防止：単純なファイル名のみ許可
+    if not art_id or "/" in art_id or "\\" in art_id or art_id.startswith("."):
+        return web.json_response({"error": "invalid id"}, status=400)
+    path = TASK_OUTPUTS_DIR / art_id
+    try:
+        path = path.resolve()
+        if path.parent != TASK_OUTPUTS_DIR.resolve() or not path.is_file():
+            return web.json_response({"error": "not found"}, status=404)
+    except Exception:
+        return web.json_response({"error": "not found"}, status=404)
+    content = path.read_text(encoding="utf-8")
+    return web.json_response({"id": art_id, "type": "markdown", "content": content})
+
+
 async def index(request: web.Request) -> web.Response:
     return web.FileResponse(WEB_DIR / "index.html")
 
@@ -881,7 +1083,9 @@ async def index(request: web.Request) -> web.Response:
 async def on_startup(app: web.Application) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    TASK_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     SCHEMA_FILE.write_text(json.dumps(OUTPUT_SCHEMA), encoding="utf-8")
+    TASK_SCHEMA_FILE.write_text(json.dumps(TASK_SCHEMA), encoding="utf-8")
     data = load_agents()
     for agent in data["agents"]:
         if agent.get("kind") == "builtin":
@@ -902,6 +1106,7 @@ def main() -> None:
         web.patch("/api/agents/{id}", patch_agent),
         web.delete("/api/agents/{id}", delete_agent),
         web.post("/api/agents/{id}/poll", manual_poll),
+        web.get("/api/artifacts/{id}", get_artifact),
         web.get("/", index),
     ])
     app.router.add_static("/", WEB_DIR, show_index=False)
