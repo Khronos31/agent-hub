@@ -550,8 +550,25 @@ def _unwrap_struct(raw) -> dict | None:
 TASK_RE = re.compile(r"/review\s+(?P<path>\S+)\s*(?::\s*(?P<focus>.*))?", re.IGNORECASE)
 # 画像生成タスクの明示トリガー。`/image <プロンプト>`。プロンプトは改行を含みうるので DOTALL。
 IMAGE_RE = re.compile(r"/image\s+(?P<prompt>.+)", re.IGNORECASE | re.DOTALL)
+# デザイン提案タスクの明示トリガー。`/design [path :] <要望>`。要望は改行を含みうるので DOTALL。
+DESIGN_RE = re.compile(
+    r"/design(?:\s+(?:(?P<path>\S+)\s*:\s*)?(?P<request>.+))",
+    re.IGNORECASE | re.DOTALL,
+)
 # 画像として配信/保存する拡張子。
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+DESIGN_TOTAL_BYTES = 60 * 1024
+DESIGN_MAX_FILES = 4
+DESIGN_PREFERRED_EXTS = {".html", ".css", ".js"}
+DESIGN_FALLBACK_EXTS = {".py"}
+DESIGN_EXACT_NAMES = {
+    "index.html",
+    "style.css",
+    "app.js",
+    "daemon.py",
+    "main.py",
+    "app.py",
+}
 
 
 def detect_task(agent: dict, new_messages: list[dict]) -> dict | None:
@@ -620,6 +637,111 @@ def _resolve_task_path(p: str) -> tuple[Path | None, str | None]:
     return ap, None
 
 
+def _is_design_path_allowed(path: Path) -> bool:
+    """デザイン読み取り対象として安全なパスだけを通す。"""
+    blocked = {"secrets.yaml", ".ssh", ".storage", ".git"}
+    for seg in path.parts:
+        if seg in blocked:
+            return False
+        if len(seg) > 1 and seg.startswith("."):
+            return False
+        if _SENSITIVE_RE.search(seg):
+            return False
+        if seg in {"sessions", "task_outputs", "node_modules", "__pycache__", "dist", "build"}:
+            return False
+    return True
+
+
+def _clip_utf8_text(text: str, limit_bytes: int) -> tuple[str, bool]:
+    raw = text.encode("utf-8")
+    if len(raw) <= limit_bytes:
+        return text, False
+    clipped = raw[:limit_bytes].decode("utf-8", errors="ignore")
+    return clipped, True
+
+
+def _design_candidate_files(root: Path) -> list[Path]:
+    """ディレクトリ内のデザイン確認向けファイル候補を少数に絞って返す。"""
+    pool: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        current = Path(dirpath)
+        dirnames[:] = [d for d in dirnames if _is_design_path_allowed(current / d)]
+        for name in filenames:
+            fp = current / name
+            if not _is_design_path_allowed(fp):
+                continue
+            if fp.suffix.lower() in DESIGN_PREFERRED_EXTS:
+                pool.append(fp)
+    if not pool:
+        for dirpath, dirnames, filenames in os.walk(root):
+            current = Path(dirpath)
+            dirnames[:] = [d for d in dirnames if _is_design_path_allowed(current / d)]
+            for name in filenames:
+                fp = current / name
+                if not _is_design_path_allowed(fp):
+                    continue
+                if fp.suffix.lower() in DESIGN_FALLBACK_EXTS:
+                    pool.append(fp)
+    pool.sort(key=lambda p: (
+        0 if p.name.lower() in DESIGN_EXACT_NAMES else 1,
+        0 if p.suffix.lower() in (".html", ".css", ".js") else 1,
+        len(p.parts),
+        str(p),
+    ))
+    return pool[:DESIGN_MAX_FILES]
+
+
+def read_design_target(p: str) -> tuple[str | None, str | None, str | None]:
+    """/design 向けに対象パスを読み込み、埋め込み用テキストとラベルを返す。"""
+    ap, err = _resolve_task_path(p)
+    if err:
+        return None, None, err
+
+    label = str(ap.relative_to(Path("/config")))
+    if ap.is_file():
+        if ap.suffix.lower() in IMAGE_EXTS:
+            return None, label, f"画像ファイルは対象外です: {ap.name}"
+        try:
+            text = ap.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return None, label, "UTF-8テキストとして読めませんでした"
+        except OSError as exc:
+            return None, label, str(exc)
+        body, truncated = _clip_utf8_text(text, DESIGN_TOTAL_BYTES)
+        if truncated:
+            body += "\n…(以下省略)"
+        return f"```{label}\n{body}\n```", label, None
+
+    if ap.is_dir():
+        files = _design_candidate_files(ap)
+        if not files:
+            return None, label, "デザイン向けの主要なテキストファイルが見つかりませんでした"
+        remaining = DESIGN_TOTAL_BYTES
+        chunks: list[str] = []
+        for fp in files:
+            if remaining <= 0:
+                break
+            try:
+                text = fp.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return None, label, f"UTF-8テキストとして読めませんでした: {fp.name}"
+            except OSError as exc:
+                return None, label, str(exc)
+            snippet, truncated = _clip_utf8_text(text, remaining)
+            used = len(snippet.encode("utf-8"))
+            remaining -= used
+            if truncated:
+                snippet += "\n…(以下省略)"
+                remaining = 0
+            rel = str(fp.relative_to(Path("/config")))
+            chunks.append(f"```{rel}\n{snippet}\n```")
+        if not chunks:
+            return None, label, "デザイン向けの主要なテキストファイルが見つかりませんでした"
+        return "\n\n".join(chunks), label, None
+
+    return None, label, "ファイルでもディレクトリでもありません"
+
+
 def save_artifact(content: str, base_name: str) -> dict | None:
     """成果物をファイル保存し、添付参照 {id, name, type} を返す。失敗時は None。
     長すぎる名前や書き込み失敗で例外を投げると呼び出し側のレビュー全体が落ちるため、
@@ -650,6 +772,23 @@ def save_image_artifact(src: Path, base_name: str) -> dict | None:
     except OSError as exc:
         log(f"save_image_artifact failed ({base_name}): {exc}")
         return None
+
+
+def _summarize_design_proposal(text: str, max_lines: int = 3, max_chars: int = 180) -> str:
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = re.sub(r"^[*-]\s+", "", line)
+        lines.append(line)
+        if len(lines) >= max_lines:
+            break
+    summary = " ".join(lines).strip()
+    if not summary:
+        summary = "デザイン提案を作成しました。"
+    return summary[:max_chars]
 
 
 def run_codex_review(agent: dict, task: dict) -> dict:
@@ -773,6 +912,73 @@ def run_agy_image(agent: dict, task: dict) -> dict:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def run_agy_design(agent: dict, task: dict) -> dict:
+    """Antigravity(agy)にデザイン提案をMarkdownで返させ、{message, attachments} を返す。
+    失敗時もユーザー向けメッセージを必ず返す（last_polled を進めて再試行ループを防ぐ）。
+    path があれば対象コードをこちらで読み込み、agy 自身にはファイル探索させない。"""
+    target_text = None
+    target_label = None
+    target_err = None
+    if task.get("path"):
+        target_text, target_label, target_err = read_design_target(task["path"])
+
+    label = target_label or task.get("path") or "トピック"
+    request = str(task.get("request") or "").strip()
+    prompt_parts = [
+        "あなたはAgent HubのUI/デザイン担当(Antigravity)です。",
+        "以下の要望と対象コードをもとに、デザイン改善提案・レビュー・UI不具合の診断をMarkdownで返してください。",
+        "実際のファイル編集やコミットはせず、提案・指摘・直し方の説明だけを返してください。",
+        "配色は落ち着いたトーンを尊重してください。",
+        f"要望:\n{request}",
+    ]
+    if target_text:
+        prompt_parts.append(f"対象: {label}\n\n{target_text}")
+    if target_err:
+        prompt_parts.append(f"注記: 指定パスを読めなかったため全般的な提案にしました。理由: {target_err}")
+    full_prompt = "\n\n".join(prompt_parts)
+
+    work = Path(tempfile.mkdtemp(prefix="agy_design_"))
+    try:
+        cmd = [CLI["agy"]]
+        model = model_for(agent)
+        if model:
+            cmd += ["--model", model]
+        # --print の直後がプロンプト本体になる。順序を崩すと agy が別挙動になる。
+        cmd += ["--print", full_prompt]
+        env = os.environ.copy()
+        rc, out, err = run_capture(cmd, env, TASK_TIMEOUT, cwd=str(work))
+        proposal = out.strip()
+        if not proposal:
+            log(f"agy design {agent['id']} no output rc={rc}: {err[:200]}")
+            return {"message": f"⚠️ デザイン提案に失敗しました（rc={rc}）。要望を少し変えて再度お試しください。"}
+
+        header_lines = [
+            f"# デザイン提案: {label}",
+            "",
+            f"_by Antigravity ({model or 'default'})_",
+            "",
+            f"- 要望: {request}",
+        ]
+        if task.get("path"):
+            header_lines.append(f"- 指定パス: {task['path']}")
+        if target_err:
+            header_lines.append(f"- 注記: 指定パスを読めなかったため全般的な提案にしました: {target_err}")
+        header = "\n".join(header_lines) + "\n\n"
+        art = save_artifact(header + proposal, f"agy-design-{label}")
+
+        summary = _summarize_design_proposal(proposal)
+        result = {"message": f"🎨 デザイン提案: {label}\n\n{summary}"}
+        if target_err:
+            result["message"] += f"\n\n⚠️ 指定パスを読めなかったため、全般的な提案にしました。({target_err})"
+        if art:
+            result["attachments"] = [art]
+        else:
+            result["message"] += "\n\n⚠️ 提案本文の保存に失敗したため、添付は省略されました。"
+        return result
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def call_claude(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> dict | None:
     cmd = [CLI["claude"], "--print", "--continue", "--output-format", "json",
            "--json-schema", json.dumps(OUTPUT_SCHEMA)]
@@ -852,6 +1058,30 @@ def call_agy(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> di
 CALLERS = {"claude": call_claude, "codex": call_codex, "agy": call_agy}
 
 
+def detect_agy_task(agent: dict, new_messages: list[dict]) -> dict | None:
+    """agy 向けの明示タスクを最新順で探す。/image と /design の新しい方を優先する。"""
+    for m in reversed(new_messages):
+        if agent["id"] not in (m.get("mentions") or []):
+            continue
+        text = m.get("message", "")
+        image = IMAGE_RE.search(text)
+        if image:
+            prompt = image.group("prompt").strip().strip("`\"'")
+            if prompt:
+                return {"kind": "image", "prompt": prompt}
+        design = DESIGN_RE.search(text)
+        if design:
+            request = (design.group("request") or "").strip().strip("`\"'")
+            if request:
+                path = design.group("path")
+                return {
+                    "kind": "design",
+                    "path": path.strip("`\"'") if path else None,
+                    "request": request,
+                }
+    return None
+
+
 def call_agent(agent: dict) -> None:
     # poll開始時刻を先に確定。成功時のみここまで last_polled_at を進める。
     # こうしないと、CLI失敗中に来たメッセージが恒久的に未読として飛ばされる。
@@ -867,12 +1097,15 @@ def call_agent(agent: dict) -> None:
     if agent.get("type") == "codex":
         task = detect_task(agent, new_messages)
     elif agent.get("type") == "agy":
-        task = detect_image_task(agent, new_messages)
+        task = detect_agy_task(agent, new_messages)
     if task:
-        log(f"{agent['id']} task: {task['kind']} {task.get('path') or task.get('prompt','')[:40]}")
+        task_preview = task.get("path") or task.get("prompt") or task.get("request") or ""
+        log(f"{agent['id']} task: {task['kind']} {task_preview[:40]}")
         try:
             if task["kind"] == "image":
                 result = run_agy_image(agent, task)
+            elif task["kind"] == "design":
+                result = run_agy_design(agent, task)
             else:
                 result = run_codex_review(agent, task)
         except Exception as exc:
