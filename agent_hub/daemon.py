@@ -68,7 +68,8 @@ DEFAULT_MODEL = {
     # codex は ChatGPTアカウント認証だと gpt-4o-mini 等を弾く。
     # gpt-5.4-mini は対応モデルとして実機確認済み（軽量・高速）。
     "codex": "gpt-5.4-mini",
-    "agy": "gemini-2.0-flash",
+    # agy はスキーマ非対応。モデル名は agy CLI の表示名そのまま指定する。
+    "agy": "Gemini 3.5 Flash (Medium)",
 }
 
 # codex の推論量。グループチャットの即応性重視で medium。
@@ -353,7 +354,8 @@ def model_for(agent: dict) -> str | None:
     return model or DEFAULT_MODEL.get(agent.get("type"))
 
 
-def build_prompt(agent: dict, data: dict, new_messages: list[dict]) -> str:
+def build_context(agent: dict, data: dict, new_messages: list[dict]) -> str:
+    """会話コンテキスト部（時刻・メンバー・新着メッセージ）。末尾の出力指示は含めない。"""
     now = datetime.now(JST)
     weekday = ["月", "火", "水", "木", "金", "土", "日"][now.weekday()]
     members = [data["user"].get("display_name", resident_name())] + [a.get("display_name", a["id"]) for a in data["agents"]]
@@ -374,20 +376,40 @@ def build_prompt(agent: dict, data: dict, new_messages: list[dict]) -> str:
         body = "前回以降のメッセージ:\n\n" + "\n".join(lines)
     else:
         body = "（前回以降、新着メッセージはありません）"
+    return header + body
+
+
+def build_prompt(agent: dict, data: dict, new_messages: list[dict]) -> str:
+    """claude/codex 用。--json-schema で {message} 構造を強制するので自然文で指示する。"""
     # 注意: ここで {"message": "..."} のようなJSONオブジェクトのリテラルを見せない。
-    # claude/codex は --json-schema で {message} 構造を既に強制しているため、
-    # ここでJSONを再提示すると message の値に JSON文字列を丸ごと入れる「二重包み」を誘発する。
-    # スキーマのフィールド名だけを自然文で参照する（agyはスキーマ非対応なので call_agy 側で形式を補う）。
+    # スキーマで構造を強制済みのため、JSONを再提示すると message の値に JSON文字列を
+    # 丸ごと入れる「二重包み」を誘発する。スキーマのフィールド名だけを自然文で参照する。
     tail = (
         "\n\nいま会話に加わりたいことがあれば、その発言内容を message に入れて返してください。\n"
         "特に発言することがなければ message を null にしてください。"
     )
-    return header + body + tail
+    return build_context(agent, data, new_messages) + tail
 
 
-def run_capture(cmd: list[str], env: dict, timeout: int) -> tuple[int, str, str]:
+def build_agy_prompt(agent: dict, data: dict, new_messages: list[dict]) -> str:
+    """agy(Antigravity) 用。スキーマ非対応かつエージェント的に動きやすいため、
+    正式なJSON Schema＋「JSON以外一切含めない」＋末尾の `JSON:` キューで
+    抽出/補完タスクとして解釈させる（実機検証でこの構造なら初回から安定）。"""
+    schema = json.dumps(OUTPUT_SCHEMA, ensure_ascii=False)
+    tail = (
+        "\n\n以下のJSON Schemaに厳密に従ってJSONで返答してください。"
+        "発言したいことがあれば message に内容を、特に発言する必要がなければ message を null にしてください。"
+        "あなた宛(@" + agent.get("display_name", agent["id"]) + ")でない雑談には無理に割り込まないでください。\n\n"
+        "JSON Schema:\n" + schema + "\n\n"
+        "最終応答は、\"{\"で始まり\"}\"で終わるJSONのみを出力し、JSON以外の文字は一切応答に含めないでください。"
+        "ツールやファイル探索は使わないでください。\n\nJSON:\n"
+    )
+    return build_context(agent, data, new_messages) + tail
+
+
+def run_capture(cmd: list[str], env: dict, timeout: int, cwd: str | None = None) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout, cwd=cwd)
         return result.returncode, result.stdout or "", result.stderr or ""
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"
@@ -516,19 +538,18 @@ def call_codex(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> 
 
 
 def call_agy(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> dict | None:
+    # agy はエージェント的に動き、弱い指示だとファイル探索・自己紹介・権限プロンプトで固まる。
+    # build_agy_prompt が正式なJSON Schema＋「JSON:」キューで抽出タスクとして解釈させる。
+    # --continue は付けない（毎回 --print 単発でクリーンに返る）。
+    # ファイル探索を防ぐため、CWD は空のセッションdirにする。
     full_prompt = (f"あなたへの指示: {sys_prompt}\n\n" if sys_prompt else "") + prompt
-    full_prompt += (
-        "\n\nJSONのみを返してください。前置き・後置き不要。\n"
-        "形式: {\"message\": \"返したい内容\"} または {\"message\": null}"
-    )
-    cmd = [CLI["agy"], "--print", "--continue"]
+    cmd = [CLI["agy"], "--print"]
     model = model_for(agent)
     if model:
         cmd += ["--model", model]
     cmd += [full_prompt]
     env = os.environ.copy()
-    env["HOME"] = str(session_dir)
-    rc, out, err = run_capture(cmd, env, CALL_TIMEOUT)
+    rc, out, err = run_capture(cmd, env, CALL_TIMEOUT, cwd=str(session_dir))
     if rc != 0:
         log(f"agy {agent['id']} rc={rc}: {err[:200]}")
     return extract_message(out)
@@ -543,7 +564,10 @@ def call_agent(agent: dict) -> None:
     poll_start = now_iso()
     data = load_agents()
     new_messages = get_messages_since(agent.get("last_polled_at", ""), exclude=agent["id"])
-    prompt = build_prompt(agent, data, new_messages)
+    if agent.get("type") == "agy":
+        prompt = build_agy_prompt(agent, data, new_messages)
+    else:
+        prompt = build_prompt(agent, data, new_messages)
     session_dir = ensure_session(agent)
     sys_prompt = (agent.get("system_prompt") or "").strip()
     caller = CALLERS.get(agent.get("type"))
