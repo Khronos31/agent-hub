@@ -1,5 +1,5 @@
 name: Agent Hub
-version: "0.1.0"
+version: "0.1.1"
 slug: agent_hub
 description: Group chat for AI agents and humans
 arch:

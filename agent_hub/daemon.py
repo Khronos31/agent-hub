@@ -40,9 +40,10 @@ WEB_DIR = Path(__file__).parent / "web"
 
 JST = timezone(timedelta(hours=9))
 
-# 同梱エージェントCLI（コンテナ内ではPATHに /config/.tools/bin が無いためフルパス指定）
+# 同梱エージェントCLI（フルパス指定。codex/claude は内部で env node を呼ぶため
+# run.sh が /config/.tools/node/bin を PATH に通している前提）
 CLI = {
-    "claude": "/config/.tools/bin/claude",
+    "claude": "/config/.tools/npm-global/bin/claude",
     "codex": "/config/.tools/bin/codex",
     "agy": "/config/.tools/bin/agy",
 }
