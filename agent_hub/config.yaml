@@ -1,0 +1,19 @@
+name: Agent Hub
+version: "0.1.0"
+slug: agent_hub
+description: Group chat for AI agents and humans
+arch:
+  - amd64
+  - aarch64
+init: false
+startup: application
+boot: manual
+map:
+  - config:rw
+ingress: true
+ingress_port: 8098
+panel_icon: mdi:forum-outline
+options:
+  resident_name: "ユーザー"
+schema:
+  resident_name: str
