@@ -65,14 +65,19 @@ AUTH_SEED = {
 # タイプ別デフォルトモデル（無闇に高価なモデルを使わない）
 DEFAULT_MODEL = {
     "claude": "haiku",
-    "codex": "gpt-4o-mini",
+    # codex は ChatGPTアカウント認証だと任意モデル(gpt-4o-mini等)を弾くため、
+    # モデル未指定にして codex 自身のデフォルト(対応モデル)に委ねる。
+    "codex": "",
     "agy": "gemini-2.0-flash",
 }
 
+# additionalProperties:false は OpenAI(codex)の strict structured output で必須。
+# claude --json-schema もこの指定を受け付ける。
 OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {"message": {"type": ["string", "null"]}},
     "required": ["message"],
+    "additionalProperties": False,
 }
 
 CALL_TIMEOUT = 120
@@ -477,7 +482,7 @@ def call_codex(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> 
     except Exception:
         pass
     full_prompt = (f"あなたへの指示: {sys_prompt}\n\n" if sys_prompt else "") + prompt
-    common = ["--output-schema", str(SCHEMA_FILE), "-o", out_file]
+    common = ["--skip-git-repo-check", "--output-schema", str(SCHEMA_FILE), "-o", out_file]
     model = model_for(agent)
     if model:
         common += ["-m", model]
