@@ -509,13 +509,35 @@ function renderMessages() {
             const attachmentsDiv = document.createElement('div');
             attachmentsDiv.className = 'message-attachments';
             msg.attachments.forEach(att => {
-                const chip = document.createElement('button');
-                chip.className = 'attachment-chip';
-                chip.innerHTML = `📄 <span class="attachment-name">${escapeHTML(att.name)}</span>`;
-                chip.addEventListener('click', () => {
-                    openArtifactModal(att.id);
-                });
-                attachmentsDiv.appendChild(chip);
+                if (att.type === 'image') {
+                    const container = document.createElement('div');
+                    container.className = 'attachment-image-wrapper';
+                    
+                    const img = document.createElement('img');
+                    img.className = 'attachment-image-thumb';
+                    img.src = `api/artifacts/${att.id}`;
+                    img.alt = att.name;
+                    
+                    img.onerror = () => {
+                        img.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="240" height="150" viewBox="0 0 240 150"><rect width="100%" height="100%" fill="%23f3f4f6"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="12" fill="%239ca3af">画像を読み込めませんでした</text></svg>';
+                        img.classList.add('error');
+                    };
+                    
+                    img.addEventListener('click', () => {
+                        openArtifactModal(att.id, att.type, att.name);
+                    });
+                    
+                    container.appendChild(img);
+                    attachmentsDiv.appendChild(container);
+                } else {
+                    const chip = document.createElement('button');
+                    chip.className = 'attachment-chip';
+                    chip.innerHTML = `📄 <span class="attachment-name">${escapeHTML(att.name)}</span>`;
+                    chip.addEventListener('click', () => {
+                        openArtifactModal(att.id, att.type || 'markdown', att.name);
+                    });
+                    attachmentsDiv.appendChild(chip);
+                }
             });
             bubbleCol.appendChild(attachmentsDiv);
         }
@@ -984,9 +1006,24 @@ function closeDeleteModal() {
 // Artifact Preview Modal Controller & Markdown Renderer
 // ==========================================================================
 
-async function openArtifactModal(artifactId) {
+async function openArtifactModal(artifactId, type = 'markdown', name = '') {
     DOM.artifactModalBody.innerHTML = '<div class="artifact-loading">読み込み中...</div>';
     DOM.artifactModal.classList.add('show');
+
+    const titleEl = document.getElementById('artifact-modal-title');
+    if (titleEl) {
+        titleEl.textContent = name ? name : '成果物プレビュー';
+    }
+
+    if (type === 'image') {
+        DOM.artifactModal.classList.add('image-mode');
+        DOM.artifactModalBody.innerHTML = `
+            <div class="artifact-image-container">
+                <img class="artifact-image-large" src="api/artifacts/${artifactId}" alt="${escapeHTML(name)}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22 viewBox=%220 0 100 100%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23eee%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-family=%22sans-serif%22 font-size=%2212%22 fill=%22%23999%22>読み込み失敗</text></svg>'">
+            </div>
+        `;
+        return;
+    }
 
     try {
         const response = await fetch(`api/artifacts/${artifactId}`);
@@ -1003,6 +1040,7 @@ async function openArtifactModal(artifactId) {
 
 function closeArtifactModal() {
     DOM.artifactModal.classList.remove('show');
+    DOM.artifactModal.classList.remove('image-mode');
     DOM.artifactModalBody.innerHTML = '';
 }
 

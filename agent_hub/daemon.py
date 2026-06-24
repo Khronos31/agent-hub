@@ -22,6 +22,7 @@ import secrets
 import shutil
 import string
 import subprocess
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -97,6 +98,8 @@ CALL_TIMEOUT = 120
 AGY_TIMEOUT = 300
 # タスク(コードレビュー等)は読解・分析で時間がかかるため、会話より長く取る。
 TASK_TIMEOUT = 300
+# 画像生成は agy のエージェント的実行（生成→ファイル保存）で更に時間がかかる。
+IMAGE_TIMEOUT = 420
 
 # タスク用 output schema。summary をチャットに、review_markdown を成果物ファイルに分離する。
 TASK_SCHEMA = {
@@ -545,6 +548,10 @@ def _unwrap_struct(raw) -> dict | None:
 
 # タスクコマンド構文（ハイブリッドの「明示」側）。例: @Codex /review path/to/file : 注文
 TASK_RE = re.compile(r"/review\s+(?P<path>\S+)\s*(?::\s*(?P<focus>.*))?", re.IGNORECASE)
+# 画像生成タスクの明示トリガー。`/image <プロンプト>`。プロンプトは改行を含みうるので DOTALL。
+IMAGE_RE = re.compile(r"/image\s+(?P<prompt>.+)", re.IGNORECASE | re.DOTALL)
+# 画像として配信/保存する拡張子。
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
 def detect_task(agent: dict, new_messages: list[dict]) -> dict | None:
@@ -559,6 +566,19 @@ def detect_task(agent: dict, new_messages: list[dict]) -> dict | None:
                 "path": match.group("path").strip("`\"'"),
                 "focus": (match.group("focus") or "").strip(),
             }
+    return None
+
+
+def detect_image_task(agent: dict, new_messages: list[dict]) -> dict | None:
+    """自分宛ての /image コマンドを新着メッセージから探す（最新を優先）。"""
+    for m in reversed(new_messages):
+        if agent["id"] not in (m.get("mentions") or []):
+            continue
+        match = IMAGE_RE.search(m.get("message", ""))
+        if match:
+            prompt = match.group("prompt").strip().strip("`\"'")
+            if prompt:
+                return {"kind": "image", "prompt": prompt}
     return None
 
 
@@ -613,6 +633,22 @@ def save_artifact(content: str, base_name: str) -> dict | None:
         return {"id": art_id, "name": f"{slug}.md", "type": "markdown"}
     except OSError as exc:
         log(f"save_artifact failed ({base_name}): {exc}")
+        return None
+
+
+def save_image_artifact(src: Path, base_name: str) -> dict | None:
+    """生成画像を成果物ディレクトリにコピーし、添付参照 {id, name, type:"image"} を返す。
+    失敗時は None（添付だけ諦めて本文は活かせるように）。"""
+    try:
+        TASK_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(JST).strftime("%Y%m%dT%H%M%S")
+        slug = (re.sub(r"[^A-Za-z0-9._-]+", "_", base_name).strip("_") or "image")[:60]
+        ext = src.suffix.lower() if src.suffix.lower() in IMAGE_EXTS else ".png"
+        art_id = f"{stamp}-{slug}-{secrets.token_hex(3)}{ext}"
+        shutil.copy2(src, TASK_OUTPUTS_DIR / art_id)
+        return {"id": art_id, "name": f"{slug}{ext}", "type": "image"}
+    except OSError as exc:
+        log(f"save_image_artifact failed ({base_name}): {exc}")
         return None
 
 
@@ -689,6 +725,51 @@ def run_codex_review(agent: dict, task: dict) -> dict:
         # 保存失敗時は添付を諦め、本文は投稿する（再試行ループにも入れない）。
         result["message"] += "\n\n⚠️ 全文の保存に失敗したため、添付は省略されました。"
     return result
+
+
+def run_agy_image(agent: dict, task: dict) -> dict:
+    """Antigravity(agy)に画像を1枚生成・保存させ、{message, attachments} を返す。
+    失敗時もユーザー向けメッセージを必ず返す（last_polled を進めて再試行ループを防ぐ）。
+    agy はエージェント的に動くため、空の作業ディレクトリで実行し、生成された PNG を回収する。"""
+    prompt_text = task["prompt"]
+    out_name = "generated.png"
+    # 生成物が会話セッションや /config を汚さないよう、使い捨ての作業ディレクトリで走らせる。
+    work = Path(tempfile.mkdtemp(prefix="agy_image_"))
+    try:
+        full_prompt = (
+            f"画像を1枚だけ生成し、必ずこのカレントディレクトリ直下に「{out_name}」という"
+            "ファイル名のPNG画像として保存してください。ファイル探索や他の作業は不要です。\n"
+            f"生成する画像の内容: {prompt_text}\n"
+            "保存が終わったら、生成した画像の簡単な説明を1〜2文の日本語で返答してください。"
+        )
+        cmd = [CLI["agy"]]
+        model = model_for(agent)
+        if model:
+            cmd += ["--model", model]
+        # --dangerously-skip-permissions: ファイル書き込み(画像保存)をagentが許可待ちせず実行するため。
+        # 引数順は call_agy と同じく「... --print <プロンプト>」を厳守（--print 直後がプロンプト値）。
+        cmd += ["--dangerously-skip-permissions", "--print", full_prompt]
+        env = os.environ.copy()
+        rc, out, err = run_capture(cmd, env, IMAGE_TIMEOUT, cwd=str(work))
+
+        pngs = sorted(
+            (p for p in work.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if not pngs:
+            log(f"agy image {agent['id']} no output rc={rc}: {err[:200] or out[:200]}")
+            return {"message": f"⚠️ 画像生成に失敗しました（rc={rc}）。プロンプトを変えて再度お試しください。"}
+
+        art = save_image_artifact(pngs[-1], "agy-image")
+        caption = (extract_message(out) or "").strip() or "画像を生成しました。"
+        result = {"message": f"🎨 画像を生成しました\n\n{caption}"}
+        if art:
+            result["attachments"] = [art]
+        else:
+            result["message"] += "\n\n⚠️ 画像の保存に失敗したため、添付は省略されました。"
+        return result
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def call_claude(agent: dict, session_dir: Path, sys_prompt: str, prompt: str) -> dict | None:
@@ -784,10 +865,15 @@ def call_agent(agent: dict) -> None:
     task = None
     if agent.get("type") == "codex":
         task = detect_task(agent, new_messages)
+    elif agent.get("type") == "agy":
+        task = detect_image_task(agent, new_messages)
     if task:
-        log(f"{agent['id']} task: {task['kind']} {task.get('path')}")
+        log(f"{agent['id']} task: {task['kind']} {task.get('path') or task.get('prompt','')[:40]}")
         try:
-            result = run_codex_review(agent, task)
+            if task["kind"] == "image":
+                result = run_agy_image(agent, task)
+            else:
+                result = run_codex_review(agent, task)
         except Exception as exc:
             log(f"task {agent['id']} error: {exc}")
             result = {"message": f"⚠️ タスク実行中にエラーが発生しました: {exc}"}
@@ -1104,6 +1190,10 @@ async def get_artifact(request: web.Request) -> web.Response:
             return web.json_response({"error": "not found"}, status=404)
     except Exception:
         return web.json_response({"error": "not found"}, status=404)
+    # 画像は生バイナリで配信（フロントの <img src> がそのまま参照する）。
+    # それ以外（Markdown等）は従来どおり JSON で本文を返す。
+    if path.suffix.lower() in IMAGE_EXTS:
+        return web.FileResponse(path)
     content = path.read_text(encoding="utf-8")
     return web.json_response({"id": art_id, "type": "markdown", "content": content})
 
