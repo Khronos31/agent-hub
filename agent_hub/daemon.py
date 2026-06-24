@@ -371,7 +371,10 @@ def extract_message(raw) -> dict | None:
     if isinstance(raw, dict):
         if "message" in raw:
             return {"message": raw["message"]}
-        if "result" in raw:  # claude --output-format json のエンベロープ
+        so = raw.get("structured_output")  # claude エンベロープのパース済みフィールド
+        if isinstance(so, dict) and "message" in so:
+            return {"message": so["message"]}
+        if "result" in raw:  # claude --output-format json のエンベロープ（result はJSON文字列）
             return extract_message(raw["result"])
         raw = json.dumps(raw, ensure_ascii=False)
     text = str(raw).strip()
@@ -382,6 +385,9 @@ def extract_message(raw) -> dict | None:
         if isinstance(obj, dict):
             if "message" in obj:
                 return {"message": obj["message"]}
+            so = obj.get("structured_output")
+            if isinstance(so, dict) and "message" in so:
+                return {"message": so["message"]}
             if "result" in obj:
                 return extract_message(obj["result"])
     except Exception:
