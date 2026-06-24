@@ -782,6 +782,11 @@ def _summarize_design_proposal(text: str, max_lines: int = 3, max_chars: int = 1
             continue
         line = re.sub(r"^#{1,6}\s*", "", line)
         line = re.sub(r"^[*-]\s+", "", line)
+        line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)  # [text](url) → text
+        line = re.sub(r"`[^`]*`", lambda m: m.group(0)[1:-1], line)  # `code` → code
+        line = line.strip()
+        if not line:
+            continue
         lines.append(line)
         if len(lines) >= max_lines:
             break
