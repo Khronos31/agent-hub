@@ -60,7 +60,9 @@
                 </div>
             </section>
 
-            <footer class="input-container">
+            <footer class="input-container" style="position: relative;">
+                <!-- メンションポップアップ -->
+                <div id="mention-popup" class="mention-popup hidden"></div>
                 <form id="chat-form" class="input-form">
                     <textarea id="chat-input" placeholder="メッセージを入力..." rows="1" aria-label="メッセージ入力"></textarea>
                     <button type="submit" id="btn-send" class="icon-button send-button" aria-label="送信">
@@ -86,24 +88,6 @@
             </header>
 
             <section class="settings-content">
-                <!-- スケジュール設定 -->
-                <div class="settings-card">
-                    <h2 class="card-title">
-                        <svg viewBox="0 0 24 24" width="18" height="18" class="card-title-icon">
-                            <path fill="currentColor" d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/>
-                        </svg>
-                        スケジュール
-                    </h2>
-                    <div class="setting-item schedule-setting">
-                        <label for="schedule-start">アクティブ時間:</label>
-                        <div class="time-range-picker">
-                            <input type="number" id="schedule-start" min="0" max="23" value="10" class="time-input">
-                            <span class="range-separator">〜</span>
-                            <input type="number" id="schedule-end" min="0" max="23" value="22" class="time-input">
-                            <span class="time-unit">時</span>
-                        </div>
-                    </div>
-                </div>
 
                 <!-- エージェント設定 -->
                 <div class="settings-card">
@@ -118,7 +102,7 @@
                             <svg viewBox="0 0 24 24" width="16" height="16">
                                 <path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
                             </svg>
-                            エージェントを追加
+                            エージェント / ユーザーを追加
                         </button>
                     </div>
 
@@ -189,29 +173,77 @@
     <!-- エージェント追加/編集用のモーダルダイアログ (SPAリッチ表現として追加) -->
     <div id="agent-modal" class="modal-overlay">
         <div class="modal-card">
-            <h3 id="modal-title">エージェントを追加</h3>
+            <h3 id="modal-title">エージェント / ユーザーを追加</h3>
             <form id="agent-form">
                 <input type="hidden" id="modal-agent-index">
                 <div class="form-group">
-                    <label for="modal-agent-name">名前</label>
-                    <input type="text" id="modal-agent-name" required placeholder="例: Antigravity">
-                </div>
-                <div class="form-group">
                     <label for="modal-agent-type">タイプ</label>
                     <select id="modal-agent-type">
-                        <option value="bundled">同梱 (Bundled)</option>
-                        <option value="external">外部 (External)</option>
+                        <option value="claude">Claude Code</option>
+                        <option value="codex">Codex</option>
+                        <option value="agy">Antigravity</option>
+                        <option value="external">外部APIキー</option>
                     </select>
                 </div>
-                <div class="form-group" id="group-agent-detail">
-                    <label for="modal-agent-detail" id="label-agent-detail">スケジュール / 設定</label>
-                    <input type="text" id="modal-agent-detail" placeholder="例: 1時間ごと, API: hub-xxxx..." required>
+
+                <!-- 同梱エージェント専用フィールド -->
+                <div id="fields-bundled" class="dynamic-fields">
+                    <div class="form-group">
+                        <label for="modal-agent-interval">だいたい何分に1回呼ぶか</label>
+                        <input type="number" id="modal-agent-interval" min="1" placeholder="60">
+                    </div>
+                    <div class="form-group">
+                        <label>活動時間帯</label>
+                        <div class="time-range-picker">
+                            <input type="number" id="modal-agent-start" min="0" max="23" value="10" class="time-input">
+                            <span class="range-separator">〜</span>
+                            <input type="number" id="modal-agent-end" min="0" max="23" value="22" class="time-input">
+                            <span class="time-unit">時</span>
+                        </div>
+                        <span style="font-size: 11px; color: var(--color-text-muted); margin-top: 4px; display: block;">※ この時間帯以外はほぼ呼び出されません</span>
+                    </div>
+                    <div class="form-group">
+                        <label for="modal-agent-prompt">システムプロンプト（任意）</label>
+                        <textarea id="modal-agent-prompt" rows="3" placeholder="エージェントの挙動を設定するプロンプトを入力してください..."></textarea>
+                    </div>
                 </div>
+
+                <!-- 外部エージェント/ユーザー専用フィールド -->
+                <div id="fields-external" class="dynamic-fields hidden">
+                    <div class="form-group">
+                        <label for="modal-agent-name">表示名</label>
+                        <input type="text" id="modal-agent-name" placeholder="例: あかね">
+                    </div>
+                    <div class="form-group">
+                        <label for="modal-agent-key">APIキー（自動生成）</label>
+                        <div class="api-key-container">
+                            <input type="text" id="modal-agent-key" readonly class="api-key-field">
+                            <button type="button" id="btn-copy-modal-key" class="primary-button">コピー</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="modal-actions">
                     <button type="button" id="btn-modal-cancel" class="text-button">キャンセル</button>
                     <button type="submit" id="btn-modal-save" class="primary-button">保存</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- 削除確認モーダル -->
+    <div id="delete-modal" class="modal-overlay">
+        <div class="modal-card">
+            <h3 id="delete-modal-title">エージェントを削除しますか？</h3>
+            <p id="delete-modal-desc" style="font-size: 14px; margin-top: 8px; line-height: 1.4; color: var(--color-text-main);"></p>
+            <div id="delete-modal-warning" class="delete-warning hidden">
+                <p>⚠️ この操作は元に戻せません</p>
+                <p>削除するとこのエージェントの記憶（会話履歴・セッション）が完全に消去されます。同じ名前で再登録しても、別人として一から始まります。</p>
+            </div>
+            <div class="modal-actions">
+                <button type="button" id="btn-delete-cancel" class="text-button">キャンセル</button>
+                <button type="button" id="btn-delete-confirm" class="danger-button">削除する</button>
+            </div>
         </div>
     </div>
 

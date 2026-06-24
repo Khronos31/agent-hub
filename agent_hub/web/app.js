@@ -1,5 +1,5 @@
 /**
- * Agent Hub - Frontend Logic (SPA & UI Interactions)
+ * Agent Hub - Frontend Logic (SPA & UI Interactions) - Version 5
  * File Path: /config/GitHub/agent-hub/agent_hub/web/app.js
  */
 
@@ -8,15 +8,11 @@
 // ==========================================================================
 const state = {
     currentScreen: 'chat-screen', // 'chat-screen' or 'settings-screen'
-    schedule: {
-        start: 10,
-        end: 22
-    },
     apiKey: 'hub-xxxxxxxxxxxxxxxxxxxxxxxx',
     agents: [
-        { name: "Codex", type: "bundled", detail: "1時間ごと" },
-        { name: "あかね", type: "external", detail: "API: hub-xxxx..." },
-        { name: "Antigravity", type: "bundled", detail: "リクエスト時起動" }
+        { id: "codex", type: "codex", name: "Codex", interval: 60, start: 10, end: 22, prompt: "コードレビューのサポートを行います。" },
+        { id: "akane", type: "external", name: "あかね", apiKey: "hub-abcdef1234567890abcdef1234567890" },
+        { id: "agy", type: "agy", name: "Antigravity", interval: 10, start: 10, end: 22, prompt: "無重力でコードを書きます。" }
     ],
     messages: [
         { sender: "あかね", content: "今日は静かだね", isUser: false, time: "15:00" },
@@ -24,6 +20,23 @@ const state = {
         { sender: "Codex", content: "コードレビュー終わったよ", isUser: false, time: "15:02" }
     ]
 };
+
+// Map of predefined display names for unique bundled types
+const typeNames = {
+    claude: "Claude Code",
+    codex: "Codex",
+    agy: "Antigravity",
+    external: "外部APIキー"
+};
+
+// Keep track of the active agent index selected for deletion
+let activeDeleteIndex = null;
+
+// Mention Suggestion State
+let mentionActive = false;
+let mentionIndex = 0;
+let filteredMentions = [];
+let mentionStartIndex = -1;
 
 // ==========================================================================
 // DOM Elements Cache
@@ -43,24 +56,44 @@ const DOM = {
     chatInput: document.getElementById('chat-input'),
     btnSend: document.getElementById('btn-send'),
 
+    // Suggestion items
+    mentionPopup: document.getElementById('mention-popup'),
+
     // Settings inputs & buttons
-    scheduleStart: document.getElementById('schedule-start'),
-    scheduleEnd: document.getElementById('schedule-end'),
     agentsListContainer: document.getElementById('agents-list-container'),
     btnAddAgent: document.getElementById('btn-add-agent'),
     apiKeyInput: document.getElementById('api-key-input'),
     btnCopyKey: document.getElementById('btn-copy-key'),
 
-    // Modal elements
+    // Modal elements (Add/Edit)
     agentModal: document.getElementById('agent-modal'),
     modalTitle: document.getElementById('modal-title'),
     agentForm: document.getElementById('agent-form'),
     modalAgentIndex: document.getElementById('modal-agent-index'),
-    modalAgentName: document.getElementById('modal-agent-name'),
     modalAgentType: document.getElementById('modal-agent-type'),
-    modalAgentDetail: document.getElementById('modal-agent-detail'),
-    labelAgentDetail: document.getElementById('label-agent-detail'),
+    
+    // Dynamic Modal containers
+    fieldsBundled: document.getElementById('fields-bundled'),
+    fieldsExternal: document.getElementById('fields-external'),
+    
+    // Inputs in dynamic containers
+    modalAgentInterval: document.getElementById('modal-agent-interval'),
+    modalAgentStart: document.getElementById('modal-agent-start'),
+    modalAgentEnd: document.getElementById('modal-agent-end'),
+    modalAgentPrompt: document.getElementById('modal-agent-prompt'),
+    modalAgentName: document.getElementById('modal-agent-name'),
+    modalAgentKey: document.getElementById('modal-agent-key'),
+    btnCopyModalKey: document.getElementById('btn-copy-modal-key'),
+    
     btnModalCancel: document.getElementById('btn-modal-cancel'),
+
+    // Delete Modal elements
+    deleteModal: document.getElementById('delete-modal'),
+    deleteModalTitle: document.getElementById('delete-modal-title'),
+    deleteModalDesc: document.getElementById('delete-modal-desc'),
+    deleteModalWarning: document.getElementById('delete-modal-warning'),
+    btnDeleteCancel: document.getElementById('btn-delete-cancel'),
+    btnDeleteConfirm: document.getElementById('btn-delete-confirm'),
 
     // Toast
     toast: document.getElementById('toast')
@@ -70,7 +103,7 @@ const DOM = {
 // API Interaction Stubs & Fallbacks
 // ==========================================================================
 const API = {
-    // Relative API Paths as requested (using ./api/... instead of /api/...)
+    // Relative API Paths (using ./api/... instead of /api/...)
     endpoints: {
         config: './api/config',
         messages: './api/messages'
@@ -86,7 +119,7 @@ const API = {
             console.warn(`[API GET Fallback] Failed to fetch ${endpoint}. Using local state.`, e);
             // Returns mocked data based on endpoint
             if (endpoint.includes('config')) {
-                return { schedule: state.schedule, apiKey: state.apiKey, agents: state.agents };
+                return { apiKey: state.apiKey, agents: state.agents };
             } else if (endpoint.includes('messages')) {
                 return state.messages;
             }
@@ -107,6 +140,18 @@ const API = {
         } catch (e) {
             console.warn(`[API POST Fallback] Failed to post to ${endpoint}. Updating local state.`, e);
             return { success: true, saved: data };
+        }
+    },
+
+    async delete(endpoint) {
+        console.log(`[API DELETE Request] ${endpoint}`);
+        try {
+            const response = await fetch(endpoint, { method: 'DELETE' });
+            if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+            return await response.json();
+        } catch (e) {
+            console.warn(`[API DELETE Fallback] Failed to delete ${endpoint}. Updating local state.`, e);
+            return { success: true };
         }
     }
 };
@@ -140,42 +185,111 @@ function setupEventListeners() {
     // Chat Form Send
     DOM.chatForm.addEventListener('submit', handleSendMessage);
 
-    // Auto-growing textarea & Enter-to-send support
+    // Auto-growing textarea & Enter-to-send support & Mentions check
     DOM.chatInput.addEventListener('input', function() {
         this.style.height = 'auto';
         this.style.height = (this.scrollHeight) + 'px';
+        checkMentionSuggestions();
     });
 
+    DOM.chatInput.addEventListener('keyup', (e) => {
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Enter' && e.key !== 'Escape') {
+            checkMentionSuggestions();
+        }
+    });
+
+    DOM.chatInput.addEventListener('click', checkMentionSuggestions);
+
     DOM.chatInput.addEventListener('keydown', (e) => {
+        if (mentionActive) {
+            if (e.key === 'ArrowDown') {
+                mentionIndex = (mentionIndex + 1) % filteredMentions.length;
+                renderMentionPopup();
+                e.preventDefault();
+                return;
+            } else if (e.key === 'ArrowUp') {
+                mentionIndex = (mentionIndex - 1 + filteredMentions.length) % filteredMentions.length;
+                renderMentionPopup();
+                e.preventDefault();
+                return;
+            } else if (e.key === 'Enter' || e.key === 'Tab') {
+                selectMention(filteredMentions[mentionIndex]);
+                e.preventDefault();
+                return;
+            } else if (e.key === 'Escape') {
+                hideMentionPopup();
+                e.preventDefault();
+                return;
+            }
+        }
+
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            // Programmatically trigger submit event
             DOM.chatForm.dispatchEvent(new Event('submit', { cancelable: true }));
         }
     });
 
-    // Copy API Key
-    DOM.btnCopyKey.addEventListener('click', handleCopyApiKey);
-
-    // Schedule Input Changes (Auto-save)
-    DOM.scheduleStart.addEventListener('change', saveScheduleSettings);
-    DOM.scheduleEnd.addEventListener('change', saveScheduleSettings);
+    // Copy API Keys
+    DOM.btnCopyKey.addEventListener('click', () => handleCopyText(state.apiKey, "APIキーをコピーしました"));
+    DOM.btnCopyModalKey.addEventListener('click', () => handleCopyText(DOM.modalAgentKey.value, "APIキーをコピーしました"));
 
     // Add Agent Modal triggers
     DOM.btnAddAgent.addEventListener('click', () => openAgentModal());
     DOM.btnModalCancel.addEventListener('click', closeAgentModal);
     DOM.agentForm.addEventListener('submit', handleSaveAgent);
 
-    // Dynamic type switching in modal to adjust label helper
+    // Dynamic type switching in modal
     DOM.modalAgentType.addEventListener('change', handleModalTypeChange);
 
-    // Window resize observer to keep layout in line
+    // Delete Modal triggers
+    DOM.btnDeleteCancel.addEventListener('click', closeDeleteModal);
+    DOM.btnDeleteConfirm.addEventListener('click', async () => {
+        if (activeDeleteIndex !== null) {
+            const agent = state.agents[activeDeleteIndex];
+            const agentId = agent.id;
+            closeDeleteModal();
+            await handleDeleteAgent(agentId);
+        }
+    });
+
+    // Window resize observer
     window.addEventListener('resize', scrollToBottom);
 }
 
 // ==========================================================================
 // Helper Functions
 // ==========================================================================
+
+/**
+ * Escape HTML to prevent XSS vulnerability
+ */
+function escapeHTML(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+/**
+ * Format message text body to highlight active mentions
+ */
+function formatMessageContent(content) {
+    let html = escapeHTML(content);
+
+    // Sort agents by display name length descending to avoid partial match conflicts
+    const sortedAgents = [...state.agents].sort((a, b) => {
+        return getAgentDisplayName(b).length - getAgentDisplayName(a).length;
+    });
+
+    sortedAgents.forEach(agent => {
+        const name = getAgentDisplayName(agent);
+        const escapedName = name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        // Match @name not followed by letter CJK boundaries
+        const regex = new RegExp('@' + escapedName + '(?!\\w|[\\u3040-\\u309F\\u30A0-\\u30FF\\u4E00-\\u9FAF])', 'g');
+        html = html.replace(regex, `<span class="mention">@${name}</span>`);
+    });
+
+    return html;
+}
 
 /**
  * Display toast notification message
@@ -189,7 +303,7 @@ function showToast(message) {
 }
 
 /**
- * Switch screen visually with clean sliding animation
+ * Switch screen visually with sliding animation
  */
 function switchScreen(screenId) {
     if (screenId === 'settings-screen') {
@@ -198,7 +312,6 @@ function switchScreen(screenId) {
     } else {
         DOM.settingsScreen.classList.remove('active');
         DOM.chatScreen.classList.add('active');
-        // Always scroll to bottom when returning to chat screen
         setTimeout(scrollToBottom, 100);
     }
     state.currentScreen = screenId;
@@ -214,10 +327,11 @@ function scrollToBottom() {
 /**
  * Generate Avatar Background Color based on name hash (with overrides)
  */
-function getAvatarColor(name) {
-    if (name === "Codex") return "#10A37F"; // OpenAI Green
+function getAvatarColor(name, type) {
+    if (type === "codex" || name === "Codex") return "#10A37F"; // OpenAI Green
+    if (type === "agy" || name === "Antigravity") return "#FF6B35"; // Orange
+    if (type === "claude" || name === "Claude Code") return "#D96B43"; // Amber/Rust
     if (name === "あかね") return "#9C27B0"; // Purple
-    if (name === "Antigravity") return "#FF6B35"; // Orange
     if (name === "ユーザー") return "#009AC7"; // User primary blue
 
     // HSL generator from name hash
@@ -239,18 +353,70 @@ function getCurrentFormattedTime() {
     return `${hours}:${minutes}`;
 }
 
+/**
+ * Copy specified text to clipboard with toast popup
+ */
+async function handleCopyText(text, successMessage) {
+    if (!text) return;
+    try {
+        await navigator.clipboard.writeText(text);
+        showToast(successMessage);
+    } catch (err) {
+        // Fallback copy logic
+        const el = document.createElement('textarea');
+        el.value = text;
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+        showToast(successMessage);
+    }
+}
+
+/**
+ * Generate unique API Key: hub- + 32 alphanumeric chars
+ */
+function generateApiKey() {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let key = 'hub-';
+    for (let i = 0; i < 32; i++) {
+        key += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return key;
+}
+
+/**
+ * Format description details text for the agent listing card
+ */
+function getAgentDetailText(agent) {
+    if (agent.type === 'external') {
+        const key = agent.apiKey || '';
+        const masked = key.length > 12 ? `${key.substring(0, 10)}...` : key;
+        return `API: ${masked}`;
+    } else {
+        const interval = agent.interval || 60;
+        const start = agent.start !== undefined ? agent.start : 10;
+        const end = agent.end !== undefined ? agent.end : 22;
+        return `だいたい${interval}分に1回 · ${start}〜${end}時`;
+    }
+}
+
+/**
+ * Retrieve clean display name based on type or custom string
+ */
+function getAgentDisplayName(agent) {
+    if (agent.type === 'external') {
+        return agent.name || "外部ユーザー";
+    }
+    return typeNames[agent.type] || agent.name || "エージェント";
+}
+
 // ==========================================================================
 // Load Data & Initial Sync
 // ==========================================================================
 async function loadInitialData() {
-    // Fetch Configuration from API
     const configData = await API.get(API.endpoints.config);
     if (configData) {
-        if (configData.schedule) {
-            state.schedule = configData.schedule;
-            DOM.scheduleStart.value = state.schedule.start;
-            DOM.scheduleEnd.value = state.schedule.end;
-        }
         if (configData.apiKey) {
             state.apiKey = configData.apiKey;
             DOM.apiKeyInput.value = state.apiKey;
@@ -260,7 +426,6 @@ async function loadInitialData() {
         }
     }
 
-    // Fetch Messages from API
     const messagesData = await API.get(API.endpoints.messages);
     if (messagesData) {
         state.messages = messagesData;
@@ -282,7 +447,6 @@ function renderMessages() {
         groupDiv.className = `message-group ${msg.isUser ? 'user-message' : 'agent-message'}`;
 
         if (!msg.isUser) {
-            // Avatar Column
             const avatarCol = document.createElement('div');
             avatarCol.className = 'avatar-col';
             
@@ -295,7 +459,6 @@ function renderMessages() {
             groupDiv.appendChild(avatarCol);
         }
 
-        // Bubble Column
         const bubbleCol = document.createElement('div');
         bubbleCol.className = 'bubble-col';
 
@@ -308,7 +471,8 @@ function renderMessages() {
 
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble';
-        bubble.textContent = msg.content;
+        // Updated to set HTML with mention styling support (Version 5)
+        bubble.innerHTML = formatMessageContent(msg.content);
         bubbleCol.appendChild(bubble);
 
         const time = document.createElement('span');
@@ -331,10 +495,12 @@ function renderAgents() {
         const card = document.createElement('div');
         card.className = 'agent-item-card';
 
+        const displayName = getAgentDisplayName(agent);
+
         const avatar = document.createElement('div');
         avatar.className = 'agent-avatar';
-        avatar.style.backgroundColor = getAvatarColor(agent.name);
-        avatar.textContent = agent.name.charAt(0);
+        avatar.style.backgroundColor = getAvatarColor(displayName, agent.type);
+        avatar.textContent = displayName.charAt(0);
 
         const info = document.createElement('div');
         info.className = 'agent-info';
@@ -344,18 +510,18 @@ function renderAgents() {
 
         const nameSpan = document.createElement('span');
         nameSpan.className = 'agent-name';
-        nameSpan.textContent = agent.name;
+        nameSpan.textContent = displayName;
 
         const badge = document.createElement('span');
-        badge.className = `badge ${agent.type === 'bundled' ? 'badge-bundled' : 'badge-external'}`;
-        badge.textContent = agent.type === 'bundled' ? '同梱 ✓' : '外部 ✓';
+        badge.className = `badge ${agent.type !== 'external' ? 'badge-bundled' : 'badge-external'}`;
+        badge.textContent = agent.type !== 'external' ? '同梱 ✓' : '外部 ✓';
 
         nameRow.appendChild(nameSpan);
         nameRow.appendChild(badge);
 
         const desc = document.createElement('span');
         desc.className = 'agent-description';
-        desc.textContent = agent.detail;
+        desc.textContent = getAgentDetailText(agent);
 
         info.appendChild(nameRow);
         info.appendChild(desc);
@@ -363,7 +529,7 @@ function renderAgents() {
         // Edit button
         const editBtn = document.createElement('button');
         editBtn.className = 'icon-button edit-agent-btn';
-        editBtn.setAttribute('aria-label', `${agent.name} を編集`);
+        editBtn.setAttribute('aria-label', `${displayName} を編集`);
         editBtn.innerHTML = `
             <svg viewBox="0 0 24 24" width="18" height="18">
                 <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
@@ -371,9 +537,22 @@ function renderAgents() {
         `;
         editBtn.addEventListener('click', () => openAgentModal(index));
 
+        // Delete button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'icon-button delete-agent-btn';
+        deleteBtn.style.color = 'var(--color-danger, #e53935)';
+        deleteBtn.setAttribute('aria-label', `${displayName} を削除`);
+        deleteBtn.innerHTML = `
+            <svg viewBox="0 0 24 24" width="18" height="18">
+                <path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+            </svg>
+        `;
+        deleteBtn.addEventListener('click', () => openDeleteModal(index));
+
         card.appendChild(avatar);
         card.appendChild(info);
         card.appendChild(editBtn);
+        card.appendChild(deleteBtn);
 
         DOM.agentsListContainer.appendChild(card);
     });
@@ -392,9 +571,9 @@ async function handleSendMessage(e) {
     const content = DOM.chatInput.value.trim();
     if (!content) return;
 
-    // Reset textarea state
     DOM.chatInput.value = '';
     DOM.chatInput.style.height = 'auto';
+    hideMentionPopup();
 
     const userMsg = {
         sender: "ユーザー",
@@ -403,118 +582,249 @@ async function handleSendMessage(e) {
         time: getCurrentFormattedTime()
     };
 
-    // 1. Instantly append user message to local state & UI
     state.messages.push(userMsg);
     renderMessages();
     scrollToBottom();
 
-    // 2. POST call to relative API
-    const response = await API.post(API.endpoints.messages, userMsg);
-    console.log("[POST Message Response]", response);
+    await API.post(API.endpoints.messages, userMsg);
 
-    // 3. Fun UX Interaction - simulate response from a random agent after 1-1.5s
-    // Only triggers in mock fallback (if backend doesn't reply dynamically)
+    // Dynamic response simulation
     setTimeout(async () => {
         const availableAgents = state.agents;
         if (availableAgents.length > 0) {
             const randomAgent = availableAgents[Math.floor(Math.random() * availableAgents.length)];
+            const name = getAgentDisplayName(randomAgent);
             const agentReply = {
-                sender: randomAgent.name,
+                sender: name,
                 content: `${userMsg.content} について了解しました！エージェント処理を開始します。`,
                 isUser: false,
                 time: getCurrentFormattedTime()
             };
             
-            // Append and render
             state.messages.push(agentReply);
             renderMessages();
             scrollToBottom();
             
-            // Log it in mock context
-            console.log(`[Mock Agent response] ${randomAgent.name} replied.`);
+            console.log(`[Mock Agent response] ${name} replied.`);
         }
     }, 1200);
 }
 
 /**
- * Copy API Key to clipboard
+ * Handle deletion of agent on endpoint API and update list view
  */
-async function handleCopyApiKey() {
-    try {
-        await navigator.clipboard.writeText(state.apiKey);
-        showToast("APIキーをコピーしました");
-    } catch (err) {
-        // Fallback for older browsers or restricted iframe environments
-        DOM.apiKeyInput.select();
-        document.execCommand('copy');
-        showToast("APIキーをコピーしました");
+async function handleDeleteAgent(agentId) {
+    await API.delete(`./api/agents/${agentId}`);
+    state.agents = state.agents.filter(a => a.id !== agentId);
+    renderAgents();
+    showToast("エージェントを削除しました");
+}
+
+// ==========================================================================
+// Mention Popup Logic (Version 5)
+// ==========================================================================
+
+/**
+ * Checks if suggestions popup should show based on text input before cursor
+ */
+function checkMentionSuggestions() {
+    const textarea = DOM.chatInput;
+    const selectionStart = textarea.selectionStart;
+    const value = textarea.value;
+    const textUpToCursor = value.slice(0, selectionStart);
+    
+    const lastAtIndex = textUpToCursor.lastIndexOf('@');
+    
+    if (lastAtIndex !== -1) {
+        const query = textUpToCursor.slice(lastAtIndex + 1);
+        const isValidPrefix = lastAtIndex === 0 || /\s/.test(textUpToCursor.charAt(lastAtIndex - 1));
+        const hasSpaceInQuery = /\s/.test(query);
+        
+        if (isValidPrefix && !hasSpaceInQuery) {
+            filteredMentions = state.agents.filter(agent => {
+                const displayName = getAgentDisplayName(agent).toLowerCase();
+                return displayName.startsWith(query.toLowerCase());
+            });
+            
+            if (filteredMentions.length > 0) {
+                mentionActive = true;
+                mentionStartIndex = lastAtIndex;
+                mentionIndex = Math.min(mentionIndex, filteredMentions.length - 1);
+                renderMentionPopup();
+                return;
+            }
+        }
+    }
+    
+    hideMentionPopup();
+}
+
+/**
+ * Render suggestion cards lists inside mention popup
+ */
+function renderMentionPopup() {
+    DOM.mentionPopup.innerHTML = '';
+    
+    filteredMentions.forEach((agent, index) => {
+        const displayName = getAgentDisplayName(agent);
+        
+        const item = document.createElement('div');
+        item.className = `mention-popup-item ${index === mentionIndex ? 'active' : ''}`;
+        
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar';
+        avatar.style.backgroundColor = getAvatarColor(displayName, agent.type);
+        avatar.style.width = '24px';
+        avatar.style.height = '24px';
+        avatar.style.fontSize = '10px';
+        avatar.textContent = displayName.charAt(0);
+        
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'mention-name';
+        nameSpan.textContent = displayName;
+        
+        item.appendChild(avatar);
+        item.appendChild(nameSpan);
+        
+        item.addEventListener('click', () => {
+            selectMention(agent);
+        });
+        
+        DOM.mentionPopup.appendChild(item);
+    });
+    
+    DOM.mentionPopup.classList.remove('hidden');
+}
+
+/**
+ * Remove suggestions overlay from view
+ */
+function hideMentionPopup() {
+    DOM.mentionPopup.classList.add('hidden');
+    mentionActive = false;
+    filteredMentions = [];
+    mentionIndex = 0;
+    mentionStartIndex = -1;
+}
+
+/**
+ * Insert query selection back into textarea with trailing space
+ */
+function selectMention(agent) {
+    const textarea = DOM.chatInput;
+    const selectionStart = textarea.selectionStart;
+    const value = textarea.value;
+    
+    const displayName = getAgentDisplayName(agent);
+    
+    const beforeMention = value.slice(0, mentionStartIndex);
+    const afterMention = value.slice(selectionStart);
+    
+    textarea.value = beforeMention + '@' + displayName + ' ' + afterMention;
+    
+    const newCursorPos = mentionStartIndex + displayName.length + 2; // +2 for @ and trailing space
+    textarea.selectionStart = newCursorPos;
+    textarea.selectionEnd = newCursorPos;
+    
+    textarea.focus();
+    hideMentionPopup();
+    
+    // Auto-adjust height trigger
+    textarea.dispatchEvent(new Event('input'));
+}
+
+// ==========================================================================
+// Modal Interactivity (Add/Edit Agent/User)
+// ==========================================================================
+
+/**
+ * Toggle dynamic fields depending on agent type value
+ */
+function handleModalTypeChange() {
+    const type = DOM.modalAgentType.value;
+    if (type === 'external') {
+        DOM.fieldsBundled.classList.add('hidden');
+        DOM.fieldsExternal.classList.remove('hidden');
+        
+        // Auto-generate key if empty
+        if (!DOM.modalAgentKey.value) {
+            DOM.modalAgentKey.value = generateApiKey();
+        }
+    } else {
+        DOM.fieldsExternal.classList.add('hidden');
+        DOM.fieldsBundled.classList.remove('hidden');
     }
 }
 
 /**
- * Save schedule adjustments and post to API config
+ * Populate list options, disabling types that are already registered
  */
-async function saveScheduleSettings() {
-    const start = parseInt(DOM.scheduleStart.value) || 0;
-    const end = parseInt(DOM.scheduleEnd.value) || 0;
+function updateModalTypeOptions(editingIndex = null) {
+    const registeredTypes = state.agents
+        .filter((_, idx) => idx !== editingIndex)
+        .map(a => a.type);
 
-    state.schedule.start = Math.max(0, Math.min(23, start));
-    state.schedule.end = Math.max(0, Math.min(23, end));
-
-    // Keep inputs clamped
-    DOM.scheduleStart.value = state.schedule.start;
-    DOM.scheduleEnd.value = state.schedule.end;
-
-    const payload = {
-        schedule: state.schedule,
-        apiKey: state.apiKey,
-        agents: state.agents
-    };
-
-    const res = await API.post(API.endpoints.config, payload);
-    console.log("[Save Config Response]", res);
-    showToast("スケジュールを保存しました");
-}
-
-// ==========================================================================
-// Modal Interactivity (Add/Edit Agent)
-// ==========================================================================
-
-function handleModalTypeChange() {
-    const type = DOM.modalAgentType.value;
-    if (type === 'bundled') {
-        DOM.labelAgentDetail.textContent = 'スケジュール / 詳細';
-        DOM.modalAgentDetail.placeholder = '例: 1時間ごと, 毎日朝8時';
-    } else {
-        DOM.labelAgentDetail.textContent = 'APIキー / URL詳細';
-        DOM.modalAgentDetail.placeholder = '例: API: hub-xxxx...';
-    }
+    Array.from(DOM.modalAgentType.options).forEach(opt => {
+        const type = opt.value;
+        const originalText = typeNames[type];
+        if (type !== 'external' && registeredTypes.includes(type)) {
+            opt.disabled = true;
+            opt.textContent = `${originalText} (登録済み)`;
+        } else {
+            opt.disabled = false;
+            opt.textContent = originalText;
+        }
+    });
 }
 
 function openAgentModal(editIndex = null) {
     if (editIndex !== null) {
         // Edit Mode
         const agent = state.agents[editIndex];
-        DOM.modalTitle.textContent = "エージェントを編集";
+        DOM.modalTitle.textContent = "エージェント / ユーザーを編集";
         DOM.modalAgentIndex.value = editIndex;
-        DOM.modalAgentName.value = agent.name;
         DOM.modalAgentType.value = agent.type;
-        DOM.modalAgentDetail.value = agent.detail;
         
-        // Lock name for default agents to maintain integrity
-        if (agent.name === "Codex" || agent.name === "あかね") {
-            DOM.modalAgentName.disabled = true;
+        updateModalTypeOptions(editIndex);
+        
+        // Populate inputs based on type
+        if (agent.type === 'external') {
+            DOM.modalAgentName.value = agent.name || "";
+            DOM.modalAgentKey.value = agent.apiKey || "";
+            DOM.modalAgentInterval.value = "";
+            DOM.modalAgentStart.value = "10";
+            DOM.modalAgentEnd.value = "22";
+            DOM.modalAgentPrompt.value = "";
         } else {
-            DOM.modalAgentName.disabled = false;
+            DOM.modalAgentName.value = "";
+            DOM.modalAgentKey.value = "";
+            DOM.modalAgentInterval.value = agent.interval || 60;
+            DOM.modalAgentStart.value = agent.start !== undefined ? agent.start : 10;
+            DOM.modalAgentEnd.value = agent.end !== undefined ? agent.end : 22;
+            DOM.modalAgentPrompt.value = agent.prompt || "";
         }
     } else {
         // Add Mode
-        DOM.modalTitle.textContent = "エージェントを追加";
+        DOM.modalTitle.textContent = "エージェント / ユーザーを追加";
         DOM.modalAgentIndex.value = "";
+        
+        updateModalTypeOptions(null);
+        
+        // Default selection: pick first enabled type option
+        const firstEnabledOpt = Array.from(DOM.modalAgentType.options).find(opt => !opt.disabled);
+        if (firstEnabledOpt) {
+            DOM.modalAgentType.value = firstEnabledOpt.value;
+        } else {
+            DOM.modalAgentType.value = 'external';
+        }
+        
+        // Clear all inputs
         DOM.modalAgentName.value = "";
-        DOM.modalAgentName.disabled = false;
-        DOM.modalAgentType.value = "bundled";
-        DOM.modalAgentDetail.value = "";
+        DOM.modalAgentKey.value = "";
+        DOM.modalAgentInterval.value = "";
+        DOM.modalAgentStart.value = "10";
+        DOM.modalAgentEnd.value = "22";
+        DOM.modalAgentPrompt.value = "";
     }
     
     handleModalTypeChange();
@@ -530,33 +840,91 @@ async function handleSaveAgent(e) {
     e.preventDefault();
 
     const indexVal = DOM.modalAgentIndex.value;
-    const name = DOM.modalAgentName.value.trim();
     const type = DOM.modalAgentType.value;
-    const detail = DOM.modalAgentDetail.value.trim();
+    
+    let agentData = {};
 
-    if (!name || !detail) return;
-
-    const agentData = { name, type, detail };
+    if (type === 'external') {
+        const name = DOM.modalAgentName.value.trim();
+        const apiKey = DOM.modalAgentKey.value.trim();
+        if (!name || !apiKey) {
+            showToast("表示名を入力してください");
+            return;
+        }
+        
+        // Retain ID if editing
+        const id = indexVal !== "" ? state.agents[parseInt(indexVal)].id : 'ext-' + Date.now().toString(36);
+        agentData = { id, type, name, apiKey };
+    } else {
+        const interval = parseInt(DOM.modalAgentInterval.value) || 60;
+        const start = parseInt(DOM.modalAgentStart.value) || 0;
+        const end = parseInt(DOM.modalAgentEnd.value) || 0;
+        
+        const clampedStart = Math.max(0, Math.min(23, start));
+        const clampedEnd = Math.max(0, Math.min(23, end));
+        const prompt = DOM.modalAgentPrompt.value.trim();
+        const name = typeNames[type];
+        
+        // Retain ID if editing
+        const id = indexVal !== "" ? state.agents[parseInt(indexVal)].id : type;
+        
+        agentData = { 
+            id,
+            type, 
+            name, 
+            interval, 
+            start: clampedStart, 
+            end: clampedEnd, 
+            prompt 
+        };
+    }
 
     if (indexVal !== "") {
-        // Update existing
+        // Update existing agent
         const idx = parseInt(indexVal);
         state.agents[idx] = agentData;
-        showToast("エージェントを更新しました");
+        showToast("エージェント情報を更新しました");
     } else {
-        // Create new
+        // Create new agent
         state.agents.push(agentData);
-        showToast("エージェントを追加しました");
+        showToast("エージェント / ユーザーを追加しました");
     }
 
     closeAgentModal();
     renderAgents();
 
-    // Save configuration change to API backend
+    // Post config update to API
     const payload = {
-        schedule: state.schedule,
         apiKey: state.apiKey,
         agents: state.agents
     };
     await API.post(API.endpoints.config, payload);
+}
+
+// ==========================================================================
+// Delete Modal Controller
+// ==========================================================================
+
+function openDeleteModal(index) {
+    const agent = state.agents[index];
+    activeDeleteIndex = index;
+    
+    const displayName = getAgentDisplayName(agent);
+    
+    if (agent.type === 'external') {
+        DOM.deleteModalTitle.textContent = "エージェントを削除しますか？";
+        DOM.deleteModalDesc.textContent = `「${displayName}」を削除します。この操作は元に戻せません。`;
+        DOM.deleteModalWarning.classList.add('hidden');
+    } else {
+        DOM.deleteModalTitle.textContent = "⚠️ エージェントを削除しますか？";
+        DOM.deleteModalDesc.textContent = `「${displayName}」を削除します。`;
+        DOM.deleteModalWarning.classList.remove('hidden');
+    }
+    
+    DOM.deleteModal.classList.add('show');
+}
+
+function closeDeleteModal() {
+    DOM.deleteModal.classList.remove('show');
+    activeDeleteIndex = null;
 }
