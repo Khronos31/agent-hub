@@ -69,7 +69,7 @@ CLIは `/config/.tools/bin/` に永続化済み（`run.sh` で PATH に追加済
 |---|---|
 | Codex | `Co-Authored-By: Codex <noreply@openai.com>` |
 | Antigravity | `Co-Authored-By: Antigravity <noreply@google.com>` |
-| Claude | `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` |
+| Claude | `Co-Authored-By: Claude Code <noreply@anthropic.com>` |
 
 例:
 ```
