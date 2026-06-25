@@ -61,6 +61,23 @@ CLIは `/config/.tools/bin/` に永続化済み（`run.sh` で PATH に追加済
 - CLI のフルパスは不要（`run.sh` で `/config/.tools/bin` を PATH に追加済み）
 - ポート 8098 は Embodied HA アドオン（8099）と被らないよう固定
 
+## コミット規約
+
+すべてのコミットメッセージの末尾に、作業したエージェントの `Co-Authored-By` トレーラーを付けること。
+
+| エージェント | トレーラー |
+|---|---|
+| Codex | `Co-Authored-By: Codex <noreply@openai.com>` |
+| Antigravity | `Co-Authored-By: Antigravity <noreply@google.com>` |
+| Claude | `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` |
+
+例:
+```
+feat: improve chat polling logic
+
+Co-Authored-By: Codex <noreply@openai.com>
+```
+
 ## 変更時のルール
 
 - `daemon.py` 以外のファイル（`web/` / `config.yaml` 等）は担当者が分かれているので、必要な変更だけ行うこと
